@@ -25,8 +25,9 @@ The primary goals of this step are:
 **Intent:** Introduce every new variable with safe defaults so all existing
 playbooks continue to work without modification. This sub-task also introduces
 two new variables — `ingress_domain` and `cluster_domain` — and a derived fact
-`ingress_domain_is_cluster_local` that later sub-tasks (1.1b, 1.3b, 1.4b) use
-to determine CoreDNS rewrite and dual-port service needs.
+`ingress_domain_is_cluster_local` that later sub-tasks (1.1b, 1.4b) use to
+decide whether CoreDNS rewrites are needed. The per-endpoint Services of
+sub-task 1.3b are needed in **both** cases.
 
 **Expected outcomes:**
 - `roles/fabric_operator_crds/defaults/main.yml` contains `ingress_type: nginx`,
@@ -113,12 +114,17 @@ it with the user-supplied default:
     - _discovered_domain.rc == 0
     - (_discovered_domain.stdout | trim) != ''
 
+# Only <namespace>.svc.<cluster_domain> is a usable cluster-local domain: the
+# FQDN <ns>-<cr>-<endpoint>.<ns>.svc.<cluster_domain> is then exactly the FQDN
+# of the per-endpoint Service created by sub-task 1.3b.
 - name: Set ingress_domain_is_cluster_local fact
   ansible.builtin.set_fact:
     ingress_domain_is_cluster_local: >-
-      {{ ingress_domain == cluster_domain
-         or ingress_domain.endswith('.svc.' + cluster_domain)
-         or ingress_domain == 'svc.' + cluster_domain }}
+      {{ ingress_domain == k8s_namespace + '.svc.' + cluster_domain }}
+    ingress_domain_is_unsupported_cluster_local: >-
+      {{ ingress_domain != k8s_namespace + '.svc.' + cluster_domain
+         and (ingress_domain == cluster_domain
+              or ingress_domain.endswith('.' + cluster_domain)) }}
 ```
 
 **Todo list:**
@@ -134,10 +140,11 @@ it with the user-supplied default:
   ```yaml
   # DNS domain suffix used to construct component hostnames.
   # Examples: localho.st (local dev), example.com (production).
-  # Set to a cluster-local value (e.g. svc.cluster.local or
-  # <namespace>.svc.cluster.local) when all components stay in-cluster and
-  # all expose_* are false — CoreDNS rewrites are then unnecessary.
-  # Mixing a cluster-local ingress_domain with any expose_*: true is an error
+  # Set to <namespace>.svc.<cluster_domain> (e.g. fabricinfra.svc.cluster.local)
+  # when all components stay in-cluster and all expose_* are false: component
+  # FQDNs are then the names of the per-endpoint Services (sub-task 1.3b) and
+  # CoreDNS rewrites are unnecessary. Any other *.<cluster_domain> value, or
+  # mixing a cluster-local ingress_domain with any expose_*: true, is an error
   # (caught at role entry by sub-task 1.1b).
   ingress_domain: localho.st
 
@@ -173,9 +180,9 @@ it with the user-supplied default:
   An alternative is to use a sentinel default (e.g. `cluster_domain: ""`) so
   any non-empty user value is treated as explicit; choose whichever makes the
   Ansible logic cleaner.
-- `ingress_domain_is_cluster_local` is consumed by sub-tasks 1.1b, 1.3b, and
-  1.4b; `cluster_domain` is consumed as a literal string by sub-task 1.4b's
-  CoreDNS rewrite target FQDNs.
+- `ingress_domain_is_cluster_local` is consumed by sub-tasks 1.1b and 1.4b;
+  `ingress_domain_is_unsupported_cluster_local` by sub-task 1.1b only.
+  Sub-task 1.3b runs regardless of either fact.
 - The `kubectl exec` requires a valid kubeconfig on the Ansible control node —
   already a prerequisite for all other collection tasks.
 
@@ -184,20 +191,26 @@ it with the user-supplied default:
 ## Sub-task 1.1b — Cluster-local domain validation guard
 
 **Intent:** When `ingress_domain` is a cluster-local suffix (detected by
-`ingress_domain_is_cluster_local: true` from sub-task 1.1), the operator
-generates component FQDNs that are already native Kubernetes Service names.
-CoreDNS resolves them without any rewrite rule, and no Ingress object is needed
-or meaningful. Two mutually exclusive cases must be enforced at role-entry time:
+`ingress_domain_is_cluster_local: true` from sub-task 1.1, i.e.
+`ingress_domain == <namespace>.svc.<cluster_domain>`), every component FQDN
+`<ns>-<cr>-<endpoint>.<ns>.svc.<cluster_domain>` is exactly the FQDN of the
+per-endpoint Service created by sub-task 1.3b. CoreDNS resolves them without
+any rewrite rule, and no Ingress object is needed or meaningful. The
+following cases must be enforced at role-entry time:
 
-| `ingress_domain_is_cluster_local` | any `expose_*: true` | Action |
+| `ingress_domain` | any `expose_*: true` | Action |
 |---|---|---|
-| `true` | no (all `false`) | Skip all Ingress/rewrite logic; proceed normally |
-| `true` | yes (at least one) | **Fail fast** with an actionable error message |
-| `false` | any | Normal path; no change |
+| `<namespace>.svc.<cluster_domain>` | no (all `false`) | Create per-endpoint Services (1.3b); skip CoreDNS rewrites (1.4b) |
+| `<namespace>.svc.<cluster_domain>` | yes (at least one) | **Fail fast** with an actionable error message |
+| any other `*.<cluster_domain>` (e.g. `svc.cluster.local`, `other-ns.svc.cluster.local`) | any | **Fail fast**: such FQDNs match no Service name |
+| external (e.g. `localho.st`) | any | Normal path; no change |
 
 **Expected outcomes:**
-- When `ingress_domain` is cluster-local and all `expose_*` are `false`, the
-  play continues without error and sub-tasks 1.3b and 1.4b are both skipped.
+- When `ingress_domain` is `<namespace>.svc.<cluster_domain>` and all
+  `expose_*` are `false`, the play continues without error, sub-task 1.3b
+  creates the per-endpoint Services, and sub-task 1.4b is skipped.
+- When `ingress_domain` is any other cluster-local value, the play fails
+  immediately and the error names the only supported form.
 - When `ingress_domain` is cluster-local and any `expose_*` is `true`, the play
   fails immediately with a clear message naming which flags are in conflict.
 - The guard is a no-op for all standard (non-cluster-local) `ingress_domain`
@@ -207,6 +220,15 @@ or meaningful. Two mutually exclusive cases must be enforced at role-entry time:
 included immediately after `set_facts.yml` in each role's `create.yml`):
 
 ```yaml
+- name: Fail when ingress_domain is a cluster-local value other than <ns>.svc.<cluster_domain>
+  ansible.builtin.fail:
+    msg: >-
+      ingress_domain='{{ ingress_domain }}' is inside the cluster domain
+      '{{ cluster_domain }}' but component FQDNs built from it match no
+      Kubernetes Service. The only supported cluster-local value is
+      '{{ k8s_namespace }}.svc.{{ cluster_domain }}'.
+  when: ingress_domain_is_unsupported_cluster_local | bool
+
 - name: Collect expose_* flags that are true (for error reporting)
   ansible.builtin.set_fact:
     _expose_flags_enabled: >-
@@ -234,14 +256,15 @@ included immediately after `set_facts.yml` in each role's `create.yml`):
 ```
 
 **Todo list:**
-- [ ] Append the two tasks above to
+- [ ] Append the three tasks above to
   `roles/fabric_operator_crds/tasks/k8s/set_facts.yml` (after the
   `ingress_domain_is_cluster_local` fact-setting task from sub-task 1.1).
 - [ ] Verify the same guard applies in `roles/hlfsupport_console` — since both
   roles include `set_facts.yml`, no duplicate code is needed.
 - [ ] Write a unit test (using `ansible-playbook --check` or `molecule`) that:
-  - passes with `ingress_domain: svc.cluster.local` + all `expose_*: false`
-  - fails with `ingress_domain: svc.cluster.local` + `expose_console: true`
+  - passes with `ingress_domain: <ns>.svc.cluster.local` + all `expose_*: false`
+  - fails with `ingress_domain: <ns>.svc.cluster.local` + `expose_console: true`
+  - fails with `ingress_domain: svc.cluster.local` (any `expose_*`)
   - passes with `ingress_domain: localho.st` + any `expose_*` combination
 - [ ] Run `ansible-lint` on the updated `set_facts.yml`.
 
@@ -252,8 +275,9 @@ included immediately after `set_facts.yml` in each role's `create.yml`):
   are omitted from the check because they are sub-flags of `expose_peer` /
   `expose_orderer` — if those parent flags are `false`, the sub-flags are
   irrelevant; if the parent flags are `true`, the parent-flag check fires first.
-- Sub-tasks 1.3b and 1.4b each add `when: not ingress_domain_is_cluster_local | bool`
-  to their own task blocks; this sub-task only handles the hard-error case.
+- Sub-task 1.4b skips its CoreDNS rewrites when the domain is cluster-local;
+  sub-task 1.3b does **not** skip (its Services are what makes cluster-local
+  FQDNs resolvable). This sub-task only handles the hard-error cases.
 
 ---
 
@@ -333,101 +357,310 @@ instead of a public URL.
 
 ---
 
-## Sub-task 1.3b — Strategic Merge Patch for port 443 on Operator Kubernetes Services (`expose-none` compatibility)
+## Sub-task 1.3b — One collection-owned ClusterIP Service per endpoint (`expose-none` compatibility)
 
-**Intent:** When Fabric components are deployed, the Fabric Operator creates Custom Resources, ConfigMaps, and Console registration entries where port `443` is encoded across connection profiles and `api_url` endpoints. Updating the Fabric Operations Console registry via REST API `PUT` after deployment is insufficient because generated ConfigMaps, connection profiles, and client configs retain port `443` references. Furthermore, the Fabric Operator creates Kubernetes Services that only expose native container ports (`7051` for peer, `7050` for orderer, `7054` for CA, and operations ports).
+**Intent:** The Fabric Operator encodes `<fqdn>:443` for **every** endpoint of
+every node in Custom Resources, ConfigMaps, connection profiles and console
+registry entries (`api_url`, `operations_url`, `grpcwp_url`, `osnadmin_url`).
+When `expose_*: false`, those FQDNs must still reach the right container port
+in-cluster, without nginx.
 
-To make in-cluster routing work seamlessly when `expose_*: false` without altering the Operator source code or mutating the console registry, apply a **Kubernetes Strategic Merge Patch** (`kubernetes.core.k8s` with `state: patched`) to the Services created by the Operator. This patch appends a `port: 443` mapping alongside the existing native ports:
-- **Peer Service**: adds `port: 443 -> targetPort: 7051` (alongside existing `7051` and `9443`).
-- **Orderer Service**: adds `port: 443 -> targetPort: 7050` (alongside existing `7050` and `8443`).
-- **CA Service**: adds `port: 443 -> targetPort: 7054` (alongside existing `7054` and `9443`).
+A single Service per node cannot do this: each node advertises **several**
+endpoints on `:443`, and a Service port maps `443` to exactly **one**
+`targetPort`. Adding `443 → 7051` to the operator's peer Service would send
+`-operations:443` to the gRPC port. That would break the console's status
+checks and its grpcweb proxy, the collection's `/healthz` waits, and
+`osnadmin` channel joins
+(see [REVIEW-MIGRATION-PLAN-STEP-1.md](./REVIEW-MIGRATION-PLAN-STEP-1.md) B3).
 
-Because `spec.ports` in Kubernetes Services has `patchStrategy: merge` and `patchMergeKey: port`, applying this patch is non-destructive: it preserves the existing native port definitions while allowing traffic directed to `:443` (via CoreDNS rewrites in `expose-none`) to be forwarded directly to the pod's container port.
+The collection therefore creates **its own ClusterIP Service per endpoint**
+(per node × endpoint type), each mapping `443` to that endpoint's native
+port. Each Service is paired with one CoreDNS rewrite per endpoint type
+(sub-task 1.4b). The operator's own Services are **never modified**, so
+operator reconciliation cannot revert anything.
+
+**Endpoint → Service mapping** (one row = one Service per node):
+
+| Component | Endpoint type (FQDN suffix) | Console URL field | `port` | `targetPort` |
+|---|---|---|---|---|
+| CA      | `ca`         | `api_url`        | 443 | 7054 |
+| CA      | `operations` | `operations_url` | 443 | 9443 |
+| Peer    | `peer`       | `api_url`        | 443 | 7051 |
+| Peer    | `operations` | `operations_url` | 443 | 9443 |
+| Peer    | `grpcweb`    | `grpcwp_url`     | 443 | 7443 |
+| Orderer | `orderer`    | `api_url`        | 443 | 7050 |
+| Orderer | `admin`      | `osnadmin_url`   | 443 | 9443 |
+| Orderer | `operations` | `operations_url` | 443 | 8443 |
+| Orderer | `grpcweb`    | `grpcwp_url`     | 443 | 7443 |
+
+**Naming rule.** The operator builds each FQDN as
+`<namespace>-<cr_name>-<endpoint>.<ingress_domain>`. The collection names
+each Service after the **first DNS label** of that FQDN:
+
+```
+Service name:  <namespace>-<cr_name>-<endpoint>        e.g. default-org1peer-operations
+Service FQDN:  <namespace>-<cr_name>-<endpoint>.<namespace>.svc.<cluster_domain>
+```
+
+As a result:
+- CoreDNS needs **one** regex rewrite per endpoint type
+  (`<ns>-*-<endpoint>.<ingress_domain>` → `<same label>.<ns>.svc.<cluster_domain>`),
+  not one rule per node. The rules can be written before any node exists,
+  which matters because each create module polls `operations_url/healthz`
+  **inside** its own task (see `wait_for()` in
+  `plugins/module_utils/ordering_services.py`). The Service and the rewrite
+  must therefore exist before the module call returns.
+- With `ingress_domain: <namespace>.svc.<cluster_domain>` (sub-task 1.1b), the
+  operator's FQDNs **are** these Service FQDNs: no rewrite at all.
+- Each Service name is a valid DNS-1035 label (≤ 63 chars, starts with a
+  letter) because it is also the first label of an FQDN the operator already
+  generates. An `assert` still enforces this.
+
+**Lifecycle.** The Services are created **before** the corresponding
+`certificate_authority` / `peer` / `ordering_service` module call. Until the
+operator starts the pods, a Service has no endpoints, which is harmless. The
+module's own health wait then succeeds through the new Service. After the
+module returns, a verification task checks every URL the console reports
+(`api_url`, `operations_url`, `grpcwp_url`, `osnadmin_url`) against the set
+of created Services. This catches a missing endpoint type that the health
+wait does not exercise (grpcweb, admin).
+
+**Facts to confirm in the operator spike** (REVIEW §Recommended order,
+action 3). They are encoded as role defaults so that a wrong guess means a
+default change, not a redesign:
+
+| # | Assumption | Default encoding |
+|---|---|---|
+| S1 | The operator CR name is the display name lowercased with every non-`[a-z0-9]` character removed (`Org1 CA` → `org1ca`). | `k8s_endpoint_services_cr_name_regex: '[^a-z0-9]'` |
+| S2 | Ordering node CR names are `<ordering service cr_name>node<i>`, `i` = 1..N. | `k8s_endpoint_services_orderer_node_suffix: 'node'` |
+| S3 | Operator pods carry the label `app: <cr_name>`, as used by the operator's own Service selector. | `k8s_endpoint_services_selector_key: app` |
+| S4 | Node TLS certificates already carry every endpoint FQDN as a SAN. nginx runs in SSL-passthrough mode today, so this is low risk. | — (no change expected) |
+
+### New internal role `k8s_endpoint_services`
+
+The three organization roles are separate playbooks and cannot share task
+files, so the logic lives in a small role called via `include_role`. Its
+Kubernetes dependency (`kubernetes.core`, a kubeconfig) is pulled in **only**
+when a component is not exposed. The REST-only path of the organization roles
+stays unchanged.
+
+`roles/k8s_endpoint_services/defaults/main.yml`:
+
+```yaml
+k8s_endpoint_services_namespace: "{{ k8s_namespace | default('default') }}"
+# Kind of component the Services are created for: ca | peer | orderer.
+k8s_endpoint_services_component: ""
+# Operator CR names, one per node (see S1/S2 in MIGRATION-STEP-1.md).
+k8s_endpoint_services_cr_names: []
+k8s_endpoint_services_cr_name_regex: '[^a-z0-9]'
+k8s_endpoint_services_orderer_node_suffix: node
+k8s_endpoint_services_selector_key: app
+# Endpoint types per component and the native container port each maps to.
+k8s_endpoint_services_endpoints:
+  ca:
+    - { endpoint: ca, target_port: 7054 }
+    - { endpoint: operations, target_port: 9443 }
+  peer:
+    - { endpoint: peer, target_port: 7051 }
+    - { endpoint: operations, target_port: 9443 }
+    - { endpoint: grpcweb, target_port: 7443 }
+  orderer:
+    - { endpoint: orderer, target_port: 7050 }
+    - { endpoint: admin, target_port: 9443 }
+    - { endpoint: operations, target_port: 8443 }
+    - { endpoint: grpcweb, target_port: 7443 }
+# Console URLs to verify after the module call (tasks_from: verify).
+k8s_endpoint_services_urls: []
+```
+
+`roles/k8s_endpoint_services/tasks/main.yml` (create):
+
+```yaml
+- name: Check every Service name is a valid DNS-1035 label
+  ansible.builtin.assert:
+    that:
+      - _svc_name is match('^[a-z]([-a-z0-9]*[a-z0-9])?$')
+      - _svc_name | length <= 63
+    fail_msg: >-
+      Service name '{{ _svc_name }}' is not a valid DNS-1035 label. Shorten the
+      namespace or the component display name.
+    quiet: true
+  loop: "{{ k8s_endpoint_services_cr_names | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component]) | list }}"
+  vars:
+    _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"
+
+- name: Create one ClusterIP Service per endpoint
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ _svc_name }}"
+        namespace: "{{ k8s_endpoint_services_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: fabric-ansible-collection
+          fabric-ansible-collection/component: "{{ k8s_endpoint_services_component }}"
+          fabric-ansible-collection/instance: "{{ item.0 }}"
+          fabric-ansible-collection/endpoint: "{{ item.1.endpoint }}"
+      spec:
+        type: ClusterIP
+        selector: "{{ {k8s_endpoint_services_selector_key: item.0} }}"
+        ports:
+          - name: https
+            port: 443
+            # Must stay an int: a string targetPort is a *named* port.
+            targetPort: "{{ item.1.target_port | int }}"
+            protocol: TCP
+  loop: "{{ k8s_endpoint_services_cr_names | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component]) | list }}"
+  loop_control:
+    label: "{{ _svc_name }}"
+  vars:
+    _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"
+```
+
+`roles/k8s_endpoint_services/tasks/verify.yml`:
+
+```yaml
+- name: Assert every console endpoint URL has a matching per-endpoint Service
+  ansible.builtin.assert:
+    that:
+      - (item | urlsplit('hostname')).split('.') | first in _expected_names
+    fail_msg: >-
+      The console advertises '{{ item }}' but no Service named
+      '{{ (item | urlsplit('hostname')).split('.') | first }}' was created.
+      Check assumptions S1–S3 in MIGRATION-STEP-1.md sub-task 1.3b.
+    quiet: true
+  loop: "{{ k8s_endpoint_services_urls | select | list }}"
+  vars:
+    _expected_names: >-
+      {{ k8s_endpoint_services_cr_names
+         | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component] | map(attribute='endpoint'))
+         | map('join', '-')
+         | map('regex_replace', '^', k8s_endpoint_services_namespace ~ '-')
+         | list }}
+```
+
+`roles/k8s_endpoint_services/tasks/delete.yml`:
+
+```yaml
+- name: Delete the per-endpoint Services of the given instances
+  kubernetes.core.k8s:
+    state: absent
+    kind: Service
+    namespace: "{{ k8s_endpoint_services_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/managed-by=fabric-ansible-collection
+      - fabric-ansible-collection/instance={{ item }}
+  loop: "{{ k8s_endpoint_services_cr_names }}"
+```
+
+### Calls from the organization roles
+
+`roles/endorsing_organization/tasks/create.yml`:
+
+```yaml
+- name: Create per-endpoint Services for the CA (expose-none)
+  ansible.builtin.include_role:
+    name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+  vars:
+    k8s_endpoint_services_component: ca
+    k8s_endpoint_services_cr_names:
+      - "{{ ca_name | lower | regex_replace('[^a-z0-9]', '') }}"
+  when: not expose_ca | default(true) | bool
+
+- name: Create certificate authority          # existing task, add `register`
+  hyperledger.fabric_ansible_collection.certificate_authority: ...
+  register: endorsing_organization_ca
+
+- name: Verify per-endpoint Services for the CA (expose-none)
+  ansible.builtin.include_role:
+    name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+    tasks_from: verify
+  vars:
+    k8s_endpoint_services_component: ca
+    k8s_endpoint_services_cr_names:
+      - "{{ ca_name | lower | regex_replace('[^a-z0-9]', '') }}"
+    k8s_endpoint_services_urls:
+      - "{{ endorsing_organization_ca.certificate_authority.api_url }}"
+      - "{{ endorsing_organization_ca.certificate_authority.operations_url }}"
+  when: not expose_ca | default(true) | bool
+```
+
+Same pattern for the peers (before *Create peer* / *Create multiple peers*):
+
+```yaml
+    k8s_endpoint_services_component: peer
+    k8s_endpoint_services_cr_names: >-
+      {{ ([peer_name] if peers == 1
+          else range(1, peers + 1) | map('string')
+               | map('regex_replace', '^', peer_name) | list)
+         | map('lower') | map('regex_replace', '[^a-z0-9]', '') | list }}
+```
+
+Verify with `api_url`, `operations_url` and `grpcwp_url` of each registered
+peer. For *Create multiple peers*, use the `results` list.
+
+`roles/ordering_organization/tasks/create.yml`: the same CA block, plus,
+before *Create ordering service*:
+
+```yaml
+    k8s_endpoint_services_component: orderer
+    k8s_endpoint_services_cr_names: >-
+      {{ range(1, ordering_service_nodes + 1) | map('string')
+         | map('regex_replace', '^', (ordering_service_name | lower
+               | regex_replace('[^a-z0-9]', '')) ~ 'node')
+         | list }}
+```
+
+After the module call, run the verify step with `api_url`, `operations_url`,
+`grpcwp_url` and `osnadmin_url` of every element of the registered
+`ordering_service` list. `osnadmin_url` is empty on Fabric < 2.4.1, and
+`select` drops empty values.
+
+The `delete.yml` of each organization role calls
+`tasks_from: delete` with the same `cr_names`, guarded by the same `when`.
 
 **Expected outcomes:**
-- In the `expose-none` scenario, component Kubernetes Services listen on both port `443` and their native ports.
-- In-cluster requests routed via CoreDNS exact rewrites (`<ingress-fqdn>:443` -> `<svc>.<ns>.svc.<cluster_domain>:443`) connect directly to the running container port without passing through NGINX Ingress.
-- Three canonical port defaults (`ingress_grpc_peer_port: 7051`, `ingress_grpc_orderer_port: 7050`, `ingress_ca_port: 7054`) and operations port variables are documented in `roles/fabric_operator_crds/defaults/main.yml`.
-- `ansible-lint` passes on all modified task files.
-
-**Port Mapping Reference:**
-
-| Component | In-cluster Service Name | Added Port (Merge Patch) | Native TargetPort | Operations Port |
-|-----------|-------------------------|--------------------------|-------------------|-----------------|
-| **Peer**    | `<peer-slug>`            | `443/TCP` (name: `https-compat`) | `7051`            | `9443` (Ops)    |
-| **Orderer** | `<orderer-slug>`         | `443/TCP` (name: `https-compat`) | `7050`            | `8443` (Ops)    |
-| **CA**      | `<ca-slug>`              | `443/TCP` (name: `https-compat`) | `7054`            | `9443` (Ops)    |
+- With `expose_ca/peer/orderer: false`, the namespace contains one Service per
+  row of the mapping table for every node, each listening on `443` only.
+- The operator's own Services are byte-for-byte unchanged.
+- `curl -k https://<ns>-<peer>-operations.<ingress_domain>/healthz` from an
+  in-cluster pod returns `{"status":"OK"}` (port 9443 reached, not 7051).
+- The module health waits pass without nginx in the path.
+- The verify step fails loudly (naming S1–S3) when the console advertises an
+  endpoint without a matching Service.
+- `ansible-lint` passes on the new role and all modified task files.
 
 **Todo list:**
-- [ ] Add the native and operations port variables to `roles/fabric_operator_crds/defaults/main.yml`:
-  ```yaml
-  ingress_grpc_peer_port: 7051
-  ingress_grpc_orderer_port: 7050
-  ingress_ca_port: 7054
-  native_peer_operations_port: 9443
-  native_orderer_operations_port: 8443
-  native_ca_operations_port: 9443
-  ```
-- [ ] In `roles/endorsing_organization/tasks/create.yml`:
-  - After CA creation and readiness, add a patch task for the CA Service:
-    ```yaml
-    - name: Patch CA Service with port 443 compatibility (expose-none)
-      kubernetes.core.k8s:
-        state: patched
-        kind: Service
-        name: "{{ ca_name | lower | replace(' ', '-') }}"
-        namespace: "{{ k8s_namespace | default(namespace) }}"
-        definition:
-          spec:
-            ports:
-              - name: https-compat
-                port: 443
-                targetPort: 7054
-                protocol: TCP
-      when: not expose_ca | default(true) | bool
-    ```
-  - After Peer creation and readiness, add a patch task for the Peer Service:
-    ```yaml
-    - name: Patch Peer Service with port 443 compatibility (expose-none)
-      kubernetes.core.k8s:
-        state: patched
-        kind: Service
-        name: "{{ peer_name | lower | replace(' ', '-') }}"
-        namespace: "{{ k8s_namespace | default(namespace) }}"
-        definition:
-          spec:
-            ports:
-              - name: https-compat
-                port: 443
-                targetPort: 7051
-                protocol: TCP
-      when: not expose_peer | default(true) | bool
-    ```
-- [ ] In `roles/ordering_organization/tasks/create.yml`:
-  - After Orderer node creation and readiness, add a patch task for the Orderer Service:
-    ```yaml
-    - name: Patch Orderer Service with port 443 compatibility (expose-none)
-      kubernetes.core.k8s:
-        state: patched
-        kind: Service
-        name: "{{ ordering_service_name | lower | replace(' ', '-') }}"
-        namespace: "{{ k8s_namespace | default(namespace) }}"
-        definition:
-          spec:
-            ports:
-              - name: https-compat
-                port: 443
-                targetPort: 7050
-                protocol: TCP
-      when: not expose_orderer | default(true) | bool
-    ```
-- [ ] Add `when: not ingress_domain_is_cluster_local | bool` where applicable so patch tasks run only when external-format FQDNs on port 443 are being redirected in-cluster.
-- [ ] Run `ansible-lint` on all modified task files in `roles/endorsing_organization` and `roles/ordering_organization`.
+- [ ] Create `roles/k8s_endpoint_services/` (`defaults/main.yml`,
+  `tasks/main.yml`, `tasks/verify.yml`, `tasks/delete.yml`, `meta/main.yml`)
+  with the content above.
+- [ ] Add the create / verify blocks around the CA and peer module calls in
+  `roles/endorsing_organization/tasks/create.yml`, and register the module
+  outputs (`endorsing_organization_ca`, `endorsing_organization_peer`,
+  `endorsing_organization_peers`).
+- [ ] Add the create / verify blocks around the CA and ordering-service
+  module calls in `roles/ordering_organization/tasks/create.yml`, and
+  register the module outputs.
+- [ ] Add the delete calls to both organization roles' `delete.yml`.
+- [ ] Run the operator spike and adjust the S1–S3 defaults if needed.
+- [ ] Document the new role in `docs/source/roles/` (internal, but its
+  defaults are user-overridable).
+- [ ] Run `ansible-lint` on the new role and all modified task files.
 
 **Relevant context:**
-- `kubernetes.core.k8s` with `state: patched` uses Kubernetes Strategic Merge Patch on core `v1/Service` resources.
-- Because `patchMergeKey` on `ports` is `port`, adding port `443` leaves the operator's native `7051`/`7050`/`7054` port entries intact.
-- This approach avoids mutating the Console registry database and avoids breaking ConfigMaps and client connection profiles that expect port `443`.
+- Sub-task 1.3b runs whenever the component is not exposed, **including**
+  when `ingress_domain` is cluster-local. Only the CoreDNS rewrites (1.4b)
+  are skipped in that case.
+- Partial exposure (e.g. `expose_peer: false`, `expose_ca: true`) works on
+  the Service side. The CI per-endpoint-type rewrites of sub-task 1.4b,
+  however, assume CA, peer and orderer are **all** unexposed, because the
+  `-operations` suffix is shared by all three components. Mixed modes need
+  exact per-FQDN rewrites and are out of scope for Step 1 CI.
+- The port variables `ingress_grpc_peer_port`, `ingress_grpc_orderer_port`
+  and `ingress_ca_port` from sub-task 1.1 remain Gateway-API listener ports
+  for Step 2. They are **not** the native target ports above.
 
 ---
 
@@ -456,197 +689,149 @@ Because `spec.ports` in Kubernetes Services has `patchStrategy: merge` and `patc
 
 ---
 
-## Sub-task 1.4b — CoreDNS per-component rewrites for the `expose-none` CI leg
+## Sub-task 1.4b — CoreDNS per-endpoint-type rewrites for the `expose-none` CI leg
 
-**Intent:** When `expose_*: false` with an external `ingress_domain` (e.g.
-`localho.st`), no Ingress objects are created for CA, peer, or orderer. The
-existing CoreDNS wildcard rewrite
-(`rewrite name regex (.*)\.localho\.st host.ingress.internal`) still resolves
-every `*.localho.st` name to the nginx ClusterIP — silently routing traffic
-through nginx even when the intent is to bypass it. This sub-task adds
-**per-component `rewrite name exact`** rules that map each ingress FQDN directly
-to the component's Kubernetes Service FQDN, which CoreDNS's `kubernetes` plugin
-resolves natively to the correct ClusterIP.
+**Intent:** When `expose_*: false` with an external `ingress_domain` (CI:
+`<ip>.nip.io` or `localho.st`), the existing CoreDNS wildcard rewrites
+(`rewrite name regex (.*)\.<domain> host.ingress.internal`) send every
+component FQDN to the nginx ClusterIP, which silently routes traffic through
+nginx when the intent is to bypass it. This sub-task adds **one rewrite rule
+per endpoint type** (`ca`, `peer`, `orderer`, `operations`, `grpcweb`,
+`admin`). Each rule maps
+`<ns>-<cr>-<endpoint>.<ingress_domain>` to the per-endpoint Service
+`<ns>-<cr>-<endpoint>.<ns>.svc.<cluster_domain>` created by sub-task 1.3b.
+Every endpoint therefore lands on its own native port: `-operations` reaches
+9443/8443, `-grpcweb` reaches 7443 and `-admin` reaches 9443, never the API
+port.
 
-**Cluster-local domain exception:** When `INGRESS_DOMAIN` ends with the cluster
-domain (i.e. it is already a `*.svc.<cluster_domain>` or `svc.<cluster_domain>`
-name), the generated component FQDNs are native Kubernetes Service names that
-CoreDNS already resolves correctly. **No rewrite rules are needed and
-`apply_coredns_component_rewrites` must not be called.** The CI script detects
-this case and skips the function entirely (see cluster-local skip guard in the
-todo list).
+The dialled hostname stays the original FQDN, so TLS SANs remain valid and no
+`csr_hosts` change or re-enrollment is needed.
 
-This mechanism preserves the original ingress FQDN as the dialled hostname so
-that TLS certificate SANs remain valid and no `csr_hosts` changes or
-re-enrollment are needed.
+**Cluster-local domain exception:** when `ingress_domain` is
+`<namespace>.svc.<cluster_domain>`, the FQDNs are already the per-endpoint
+Service FQDNs. No rewrite is applied.
 
-**Design constraint:** The CoreDNS ConfigMap changes are applied by the CI
-bootstrap script (`.github/scripts/kind_with_nginx.sh`), **not by any Ansible
-role task**, consistent with MIGRATION-PLAN.md §1.1. The script runs the
-`apply_coredns_component_rewrites` function **after** the Ansible playbook has
-completed (so component names, the namespace, and the cluster domain are known).
+**Design constraints:**
+- The rules are applied by the CI bootstrap script
+  (`.github/scripts/kind_with_nginx.sh`), **not by any Ansible role task**,
+  consistent with MIGRATION-PLAN.md §1.1.
+- They are written in `apply_coredns_override` at **cluster bootstrap,
+  before any playbook runs**. The rules are patterns, so they do not depend
+  on node names, and the console and the module health waits need them
+  during `build_network.sh`.
+- The existing `Corefile` content (the `localho.st` / nip.io wildcards to
+  `host.ingress.internal`, the `hosts` block, the `kubernetes` plugin) is
+  **kept**. The endpoint rules are inserted **before** the wildcards. With
+  rewrite's default `stop` behaviour, the first matching rule wins, so
+  endpoint FQDNs never reach the wildcard, while the console FQDN
+  (`-console`, `-proxy`, matching no endpoint rule) still goes to nginx.
+- `CLUSTER_DOMAIN` is not discovered: this function writes the `kubernetes`
+  plugin line itself, so it uses the same `CLUSTER_DOMAIN` variable
+  (default `cluster.local`) in both places.
+- Each `name regex` rule has a matching `answer name` rule so that clients
+  receive an answer for the name they asked for.
 
-**Kubernetes Service name pattern:**
-The operator creates a Service per component named after the component slug
-within the namespace. The naming convention is:
+**Generated rule (one per endpoint type).** Example for namespace `default`,
+ingress domain `127-0-0-1.nip.io` and endpoint type `operations`:
 
 ```
-Service name:  <component-slug>          (e.g. org1peer, orderingorg-orderer, org1ca)
-Namespace:     <namespace>               (e.g. fabricinfra)
-Full FQDN:     <slug>.<namespace>.svc.<CLUSTER_DOMAIN>
+rewrite stop {
+    name regex ^(default-[a-z0-9]+-operations)\.127-0-0-1\.nip\.io {1}.default.svc.cluster.local
+    answer name ^(default-[a-z0-9]+-operations)\.default\.svc\.cluster\.local {1}.127-0-0-1.nip.io
+}
 ```
 
-The `CLUSTER_DOMAIN` value is discovered at CI script runtime (see
-**Cluster domain discovery** below). The script author must substitute the
-actual slug for each deployed component.
-
-**Cluster domain discovery in the CI script:**
-
-The CI script cannot read Ansible facts, so it discovers the cluster domain
-independently using the same `/etc/resolv.conf` technique from sub-task 1.1:
-
-```bash
-# Discover the cluster domain from the CoreDNS pod's resolv.conf.
-# awk field $4: $1=word "search", $2=<ns>.svc.<domain>, $3=svc.<domain>, $4=<domain>
-CLUSTER_DOMAIN=$(kubectl exec -n kube-system deployment/coredns \
-  -- awk '/^search/{print $4}' /etc/resolv.conf 2>/dev/null)
-if [[ -z "${CLUSTER_DOMAIN}" ]]; then
-  CLUSTER_DOMAIN="${CLUSTER_DOMAIN_FALLBACK:-cluster.local}"
-  echo "WARNING: could not discover cluster domain; using ${CLUSTER_DOMAIN}"
-fi
-```
-
-**CoreDNS rewrite rule format (per component):**
-```
-rewrite name exact <ingress-fqdn> <k8s-svc-fqdn>
-```
-
-Example for a peer named `Org1 Peer` in namespace `fabricinfra`, ingress domain
-`localho.st`, cluster domain `cluster.local`:
-```
-rewrite name exact fabricinfra-org1peer-peer.localho.st org1peer.fabricinfra.svc.cluster.local
-rewrite name exact fabricinfra-org1peer-operations.localho.st org1peer.fabricinfra.svc.cluster.local
-```
+`[a-z0-9]+` matches the operator CR name (assumption S1 in sub-task 1.3b: no
+dashes). That prevents `default-org1peer-operations` from being confused with
+a CR whose own name ends in an endpoint word.
 
 **Expected outcomes:**
-- When `INGRESS_DOMAIN` is cluster-local, `apply_coredns_component_rewrites` is
-  not called; the CoreDNS ConfigMap is left unchanged.
-- When `INGRESS_DOMAIN` is external, `kind_with_nginx.sh` calls
-  `apply_coredns_component_rewrites` with the discovered `CLUSTER_DOMAIN`,
-  generating `rewrite name exact` rules whose targets use the real cluster domain.
-- After the function runs, `nslookup fabricinfra-org1peer-peer.localho.st` from
-  inside the cluster resolves to the peer Service ClusterIP, **not** the nginx
-  ClusterIP.
-- The wildcard rewrite for the console FQDN is preserved (or replaced by a
-  specific rule if `expose_console: false`).
+- In the `expose-none` leg, the CoreDNS ConfigMap contains six endpoint
+  rewrite blocks ahead of the existing wildcards. In the `expose-all` leg, it
+  is unchanged.
+- From an in-cluster pod, `nslookup <ns>-<peer>-operations.<domain>` returns
+  the ClusterIP of Service `<ns>-<peer>-operations`, which is neither the
+  nginx ClusterIP nor the `<ns>-<peer>-peer` ClusterIP.
+- The console FQDN still resolves to the nginx ClusterIP.
 - CoreDNS is restarted after the ConfigMap is applied.
 - The function is the direct prototype for the equivalent function in
   `kind_with_envoy_gateway.sh` introduced in Step 2.
 
 **Todo list:**
-- [ ] Add the cluster domain discovery block (shown above) to
-  `kind_with_nginx.sh`, executed once before the first potential call to
-  `apply_coredns_component_rewrites`.
-- [ ] Add the following bash function to `.github/scripts/kind_with_nginx.sh`.
-  Note that the Service FQDN suffix uses `${cluster_domain}` (the second
-  positional argument), not the hardcoded string `cluster.local`, and that the
-  per-component exact rules are placed **before** the wildcard so they take
-  precedence (CoreDNS evaluates rewrite rules top-to-bottom):
+- [ ] In `.github/scripts/kind_with_nginx.sh`, add the inputs (they default to
+  the values the tutorial already uses):
   ```bash
-  # apply_coredns_component_rewrites NAMESPACE CLUSTER_DOMAIN PAIR [PAIR ...]
-  # PAIR format: "<ingress-fqdn>:<k8s-service-name>"
-  # Prototype for the equivalent function in kind_with_envoy_gateway.sh (Step 2).
-  # Generates per-component CoreDNS "rewrite name exact" rules and applies them.
-  apply_coredns_component_rewrites() {
-    local namespace="$1"
-    local cluster_domain="$2"
-    shift 2
-    local pairs=("$@")
-
-    # Build the rewrite stanza — one exact rule per FQDN:service pair.
-    # Rules are placed BEFORE the wildcard so they take precedence.
-    local rewrites=""
-    for pair in "${pairs[@]}"; do
-      local fqdn="${pair%%:*}"
-      local svc="${pair##*:}"
-      rewrites+="        rewrite name exact ${fqdn} ${svc}.${namespace}.svc.${cluster_domain}\n"
+  NAMESPACE=${NAMESPACE:-default}
+  CLUSTER_DOMAIN=${CLUSTER_DOMAIN:-cluster.local}
+  # INGRESS_DOMAIN defaults to NIP_DOMAIN inside apply_coredns_override
+  ```
+- [ ] Add a helper that prints the endpoint rewrite blocks:
+  ```bash
+  # coredns_endpoint_rewrites NAMESPACE INGRESS_DOMAIN CLUSTER_DOMAIN
+  # One rewrite per endpoint type: <ns>-<cr>-<endpoint>.<domain> -> per-endpoint
+  # Service <ns>-<cr>-<endpoint>.<ns>.svc.<cluster_domain> (MIGRATION-STEP-1 1.3b).
+  coredns_endpoint_rewrites() {
+    local ns="$1" domain="$2" cluster_domain="$3"
+    local domain_re="${domain//./\\.}"
+    local cluster_domain_re="${cluster_domain//./\\.}"
+    local endpoint
+    for endpoint in ca peer orderer operations grpcweb admin; do
+      printf '        rewrite stop {\n'
+      printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s {1}.%s.svc.%s\n' \
+        "${ns}" "${endpoint}" "${domain_re}" "${ns}" "${cluster_domain}"
+      printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s {1}.%s\n' \
+        "${ns}" "${endpoint}" "${ns}" "${cluster_domain_re}" "${domain}"
+      printf '        }\n'
     done
-
-    kubectl apply -f - <<EOF
-  apiVersion: v1
-  kind: ConfigMap
-  metadata:
-    name: coredns
-    namespace: kube-system
-  data:
-    Corefile: |
+  }
+  ```
+- [ ] In `apply_coredns_override`, compute the block only for a
+  non-cluster-local `expose-none` run, and insert it right after `ready`,
+  before the existing wildcard rewrites:
+  ```bash
+  INGRESS_DOMAIN=${INGRESS_DOMAIN:-${NIP_DOMAIN}}
+  ENDPOINT_REWRITES=""
+  if [[ "${EXPOSE_CA:-true}" == "false" \
+     && "${EXPOSE_PEER:-true}" == "false" \
+     && "${EXPOSE_ORDERER:-true}" == "false" \
+     && "${INGRESS_DOMAIN}" != "${NAMESPACE}.svc.${CLUSTER_DOMAIN}" ]]; then
+    ENDPOINT_REWRITES=$(coredns_endpoint_rewrites \
+      "${NAMESPACE}" "${INGRESS_DOMAIN}" "${CLUSTER_DOMAIN}")
+  fi
+  ```
+  ```
       .:53 {
           errors
           health {
              lameduck 5s
           }
           ready
-          kubernetes ${cluster_domain} in-addr.arpa ip6.arpa {
-             pods insecure
-             fallthrough in-addr.arpa ip6.arpa
-             ttl 30
-          }
-  $(printf '%b' "${rewrites}")
-          rewrite name regex (.*)\.${INGRESS_DOMAIN//./\\.} host.ingress.internal
-          prometheus :9153
-          forward . /etc/resolv.conf {
-             max_concurrent 1000
-          }
-          cache 30
-          loop
-          reload
-          loadbalance
-      }
-  EOF
-
-    # Restart CoreDNS to pick up the new ConfigMap
-    kubectl -n kube-system rollout restart deployment/coredns
-    kubectl -n kube-system rollout status deployment/coredns --timeout=60s
-  }
+  ${ENDPOINT_REWRITES}
+          rewrite name regex (.*)\.localho\.st host.ingress.internal
+          rewrite name regex (.*)\.${NIP_DOMAIN} host.ingress.internal
+          hosts { ... unchanged ... }
+          kubernetes ${CLUSTER_DOMAIN} in-addr.arpa ip6.arpa { ... unchanged ... }
+          ...
   ```
-- [ ] Wrap the call site in two nested guards — expose-none outer, cluster-local
-  skip inner — so the function is only invoked for a non-cluster-local
-  `expose-none` leg:
-  ```bash
-  if [[ "${EXPOSE_PEER:-true}" == "false" \
-     && "${EXPOSE_CA:-true}" == "false" \
-     && "${EXPOSE_ORDERER:-true}" == "false" ]]; then
-    # Skip when ingress_domain is already cluster-local (FQDNs resolve natively)
-    if [[ "${INGRESS_DOMAIN}" != *".svc.${CLUSTER_DOMAIN}" \
-       && "${INGRESS_DOMAIN}" != "svc.${CLUSTER_DOMAIN}" \
-       && "${INGRESS_DOMAIN}" != "${CLUSTER_DOMAIN}" ]]; then
-      apply_coredns_component_rewrites "${NAMESPACE}" "${CLUSTER_DOMAIN}" \
-        "fabricinfra-org1peer-peer.${INGRESS_DOMAIN}:org1peer" \
-        "fabricinfra-org1peer-operations.${INGRESS_DOMAIN}:org1peer" \
-        "fabricinfra-orderingorg-orderer.${INGRESS_DOMAIN}:orderingorg-orderer" \
-        "fabricinfra-orderingorg-operations.${INGRESS_DOMAIN}:orderingorg-orderer" \
-        "fabricinfra-org1ca-ca.${INGRESS_DOMAIN}:org1ca" \
-        "fabricinfra-orderingca-ca.${INGRESS_DOMAIN}:orderingca"
-    fi
-  fi
-  ```
-  Verify the actual Service names against `kubectl get svc -n fabricinfra`
-  before hardcoding them.
-- [ ] Confirm the generated ConfigMap preserves the wildcard `rewrite name regex`
-  line for the console when `expose_console: true`; replace it with a specific
-  `rewrite name exact` rule for the console Service when `expose_console: false`.
-- [ ] Run `bash -n kind_with_nginx.sh` to check for syntax errors.
+- [ ] Make sure the `EXPOSE_*`, `NAMESPACE` and `INGRESS_DOMAIN` variables are
+  exported **before** `kind_with_nginx.sh` runs in `fvtest.yml` (the matrix
+  `env` of sub-task 1.5), because the script now runs before the playbooks.
+- [ ] Run `bash -n .github/scripts/kind_with_nginx.sh`.
+- [ ] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
+  bootstrap with `EXPOSE_*=false` and check the six blocks and the unchanged
+  wildcard / `hosts` lines.
 
 **Relevant context:**
-- The per-component exact rules are placed **before** the wildcard in the
-  Corefile so they take precedence (CoreDNS applies rewrite rules in order).
-- The `kubernetes` plugin declaration uses the discovered `${cluster_domain}`,
-  making the authoritative zone match the actual cluster rather than a hardcoded
-  string.
-- The `kubernetes` CoreDNS plugin resolves `*.svc.<cluster_domain>` natively;
-  no additional plugin configuration is needed.
-- Sub-task 1.6 assertion 6 verifies this function's effect end-to-end. When
-  `INGRESS_DOMAIN` is cluster-local assertion 6 is skipped (no rewrite to verify).
+- Only CA, peer and orderer get endpoint rules. The console keeps resolving
+  through the wildcard. With `expose_console: false`, the collection and the
+  Job reach it through its in-cluster Service URL (sub-tasks 1.3 and 1.5),
+  not through its FQDN.
+- The rules are pattern-based, so they also cover nodes added later
+  (`peers: N`, extra orderer nodes) without touching CoreDNS again.
+- Partial exposure is not covered by these rules: see the last note of
+  sub-task 1.3b.
+- Sub-task 1.6 assertions 3–6 verify this end to end. When `INGRESS_DOMAIN`
+  is cluster-local, assertion 6 is skipped (no rewrite to verify).
 
 ---
 
@@ -654,10 +839,11 @@ rewrite name exact fabricinfra-org1peer-operations.localho.st org1peer.fabricinf
 
 **Intent:** Extend `fvtest.yml` with a second matrix leg (`expose-none`) that
 validates the extreme opposite scenario on the nginx path. Because the
-`expose-none` leg uses native ports and per-component CoreDNS rewrites (sub-tasks
-1.3b and 1.4b), the GitHub Actions runner — which is **outside** the KIND cluster
-— cannot resolve ingress FQDNs to in-cluster Service IPs, nor dial native Fabric
-ports through the KIND host-port mappings (which only expose `80` and `443`).
+`expose-none` leg routes every endpoint FQDN to a per-endpoint ClusterIP Service
+through in-cluster CoreDNS rewrites (sub-tasks 1.3b and 1.4b), the GitHub
+Actions runner — which is **outside** the KIND cluster — cannot resolve those
+FQDNs: its `:443` traffic would still reach nginx through the KIND host-port
+mapping, which is exactly the path this leg must not use.
 The `expose-none` leg therefore runs the tutorial Ansible playbooks **from inside
 the cluster** using a Kubernetes Job.
 
@@ -786,79 +972,122 @@ in-cluster Ansible Job from sub-task 1.5 completes.
   _Failure indicates_: the console pod is not running, the Service selector is
   wrong, or the health endpoint path has changed.
 
-- [ ] **Assertion 3 — Peer gRPC endpoint reachable at native port 7051**
-  (TLS handshake succeeds; connection is not refused):
+- [ ] **Assertions 3–6 — common preamble.** Endpoints are discovered from
+  the labelled Services of sub-task 1.3b, so no node name is hardcoded:
   ```bash
-  kubectl run grpc-peer \
-    --image=curlimages/curl:latest --restart=Never --rm -i \
-    --namespace fabricinfra \
-    -- curl -sk --connect-timeout 5 \
-    https://fabricinfra-org1peer-peer.localho.st:7051
-  # Pass condition: exit code 0 or 35 (TLS handshake error — not exit 7 / ECONNREFUSED)
-  exit_code=$?
-  [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 35 ] \
-    || (echo "Peer gRPC port 7051 unreachable (exit $exit_code)" && exit 1)
+  NS="${NAMESPACE:-default}"
+  DOMAIN="${INGRESS_DOMAIN}"
+  SEL=app.kubernetes.io/managed-by=fabric-ansible-collection
+  svcs_of() {  # svcs_of <endpoint-type> -> Service names
+    kubectl get svc -n "$NS" -l "$SEL,fabric-ansible-collection/endpoint=$1" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  }
+  incluster() {  # incluster <name> <image> <cmd...>
+    kubectl run "$1" --image="$2" --restart=Never --rm -i --quiet \
+      --namespace "$NS" --command -- "${@:3}"
+  }
   ```
-  _Failure (exit 7)_ indicates: the CoreDNS exact rewrite for the peer FQDN is
-  missing or incorrect, or the peer Service port mapping does not include 7051.
 
-- [ ] **Assertion 4 — Orderer gRPC endpoint reachable at native port 7050**:
-  Same pattern as Assertion 3 with the orderer FQDN and port 7050.
+- [ ] **Assertion 3 — One Service per endpoint, correct target port, ready
+  backends.** Static check of the endpoint → port mapping table (sub-task
+  1.3b). It proves that `-operations`, `-grpcweb` and `-admin` do not
+  target the API port:
   ```bash
-  kubectl run grpc-orderer \
-    --image=curlimages/curl:latest --restart=Never --rm -i \
-    --namespace fabricinfra \
-    -- curl -sk --connect-timeout 5 \
-    https://fabricinfra-orderingorg-orderer.localho.st:7050
-  exit_code=$?
-  [ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 35 ] \
-    || (echo "Orderer gRPC port 7050 unreachable (exit $exit_code)" && exit 1)
+  declare -A want=( [ca/ca]=7054 [ca/operations]=9443
+                    [peer/peer]=7051 [peer/operations]=9443 [peer/grpcweb]=7443
+                    [orderer/orderer]=7050 [orderer/admin]=9443
+                    [orderer/operations]=8443 [orderer/grpcweb]=7443 )
+  for key in "${!want[@]}"; do
+    comp="${key%/*}" ep="${key#*/}"
+    names=$(kubectl get svc -n "$NS" \
+      -l "$SEL,fabric-ansible-collection/component=$comp,fabric-ansible-collection/endpoint=$ep" \
+      -o jsonpath='{.items[*].metadata.name}')
+    [ -n "$names" ] || { echo "No $comp '$ep' Service found"; exit 1; }
+    for svc in $names; do
+      port=$(kubectl get svc -n "$NS" "$svc" -o jsonpath='{.spec.ports[?(@.port==443)].targetPort}')
+      [ "$port" = "${want[$key]}" ] \
+        || { echo "$svc: 443 -> $port, expected ${want[$key]}"; exit 1; }
+      addrs=$(kubectl get endpoints -n "$NS" "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}')
+      [ -n "$addrs" ] \
+        || { echo "$svc has no ready backend (selector assumption S3?)"; exit 1; }
+    done
+  done
   ```
-  _Failure (exit 7)_ indicates: CoreDNS exact rewrite for the orderer FQDN is
-  missing, or the orderer Service does not expose port 7050.
+  The `orderer/admin` entry is expected only on Fabric ≥ 2.4.1 (operator
+  gate). Drop it from `want` for older pinned versions.
+  _Failure indicates_: sub-task 1.3b skipped a component or endpoint type, or
+  used a wrong target port, or the selector (S3) matches no pod.
 
-- [ ] **Assertion 5 — CA HTTPS enrollment endpoint reachable at port 7054**:
+- [ ] **Assertion 4 — Every operations endpoint answers `/healthz` on `:443`
+  through its FQDN.** This exercises CoreDNS rewrite + per-endpoint Service
+  + port 9443/8443, the path used by the console status checks and the
+  collection's health waits:
   ```bash
-  kubectl run ca-check \
-    --image=curlimages/curl:latest --restart=Never --rm -i \
-    --namespace fabricinfra \
-    -- curl -sf -k \
-    https://fabricinfra-orderingca-ca.localho.st:7054/cainfo
-  # Pass condition: JSON response body containing "caName"
+  urls=$(svcs_of operations | sed "s|.*|https://&.${DOMAIN}/healthz|")
+  incluster healthz curlimages/curl:8.10.1 sh -c '
+    for u in '"$(echo $urls)"'; do
+      curl -sk --connect-timeout 5 "$u" | grep -q "\"status\":\"OK\"" \
+        || { echo "FAIL $u"; exit 1; }
+    done'
   ```
-  _Failure_ indicates: the CoreDNS exact rewrite for the CA FQDN is missing,
-  the CA Service does not expose port 7054, or the CA pod is not ready.
+  _Failure indicates_: the `operations` rewrite is missing, the Service
+  targets the API port, or the node is unhealthy.
 
-- [ ] **Assertion 6 — DNS resolution of ingress FQDNs resolves to Service
-  ClusterIP, not nginx ClusterIP** (confirms sub-task 1.4b CoreDNS rewrites):
+- [ ] **Assertion 5 — API, CA, grpcweb and admin endpoints accept TLS on
+  `:443` through their FQDNs.** The CA `-ca` endpoint must return `/cainfo`
+  JSON. For gRPC, grpcweb and the mTLS-only admin endpoint, a TLS-level
+  answer is enough: curl exit 0, 35 (handshake alert, e.g. a client
+  certificate is required) or 56. Exits 6, 7 and 28 (DNS failure, connection
+  refused, timeout) fail. Port correctness is already proven by assertion 3:
   ```bash
-  nginx_ip=$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
-    -o jsonpath='{.spec.clusterIP}')
-  resolved_ip=$(kubectl run dns-check \
-    --image=busybox:latest --restart=Never --rm -i \
-    -- nslookup fabricinfra-org1peer-peer.localho.st \
-    | grep 'Address:' | tail -1 | awk '{print $2}')
-  [ "$resolved_ip" != "$nginx_ip" ] \
-    || (echo "Peer FQDN still resolves to nginx ClusterIP — CoreDNS exact rewrite not active" \
-        && exit 1)
+  ca_urls=$(svcs_of ca | sed "s|.*|https://&.${DOMAIN}/cainfo|")
+  tls_urls=$(for ep in peer orderer grpcweb admin; do svcs_of "$ep"; done \
+    | sed "s|.*|https://&.${DOMAIN}/|")
+  incluster tls-check curlimages/curl:8.10.1 sh -c '
+    for u in '"$(echo $ca_urls)"'; do
+      curl -sk --connect-timeout 5 "$u" | grep -q caName || { echo "FAIL $u"; exit 1; }
+    done
+    for u in '"$(echo $tls_urls)"'; do
+      rc=0; curl -sk -o /dev/null --connect-timeout 5 "$u" || rc=$?
+      case $rc in 0|35|56) ;; *) echo "FAIL $u (curl exit $rc)"; exit 1;; esac
+    done'
   ```
-  _Failure_ indicates: `apply_coredns_component_rewrites` was not called, the
-  CoreDNS ConfigMap was not applied, or CoreDNS was not restarted after the
-  ConfigMap update.
+  _Failure indicates_: a rewrite for that endpoint type is missing, or the
+  Service has no backend.
+
+- [ ] **Assertion 6 — Each endpoint FQDN resolves to its own Service's
+  ClusterIP** (not nginx, and not a sibling endpoint's Service). This
+  confirms the sub-task 1.4b rewrites. Skipped when `INGRESS_DOMAIN` is
+  cluster-local:
+  ```bash
+  pairs=$(kubectl get svc -n "$NS" -l "$SEL" \
+    -o jsonpath='{range .items[*]}{.metadata.name}={.spec.clusterIP}{" "}{end}')
+  incluster dns-check busybox:1.36.1 sh -c '
+    for p in '"${pairs}"'; do
+      fqdn="${p%%=*}.'"${DOMAIN}"'"; want="${p#*=}"
+      got=$(nslookup "$fqdn" | awk "/^Address/ {a=\$2} END {print a}")
+      [ "$got" = "$want" ] || { echo "FAIL $fqdn -> $got, expected $want"; exit 1; }
+    done'
+  ```
+  _Failure indicates_: `coredns_endpoint_rewrites` was not emitted (check
+  the `EXPOSE_*` / `INGRESS_DOMAIN` env passed to `kind_with_nginx.sh`), the
+  `[a-z0-9]+` CR pattern does not match (assumption S1), or CoreDNS was not
+  restarted.
 
 - [ ] Add all six assertions as a single `"Verify expose-none reachability"` step
   in `fvtest.yml`, conditioned on `if: matrix.scenario == 'expose-none'`.
-- [ ] Use `set -e` at the top of the step's `run:` block so the first failing
-  assertion aborts with a non-zero exit code and the step is marked failed.
+- [ ] Use `set -euo pipefail` at the top of the step's `run:` block so the
+  first failing assertion aborts the step. Commands whose non-zero exit is
+  expected are wrapped as `rc=0; cmd || rc=$?`.
 
 **Relevant context:**
-- Replace the placeholder FQDN fragments `<console-svc>`, `<namespace>`,
-  `<ingress_domain>` with the actual values from the CI environment
-  (`fabricinfra`, `localho.st`, and the console Service name) before committing.
-- Assertions 3–5 use `curl` for gRPC/TLS because the ephemeral pod approach does
-  not require the Fabric `peer` binary; the connection-refused vs TLS-error
-  distinction is sufficient to confirm reachability.
-- Sub-task 1.4b must be complete before Assertions 3–6 can pass.
+- Assertions 1–2 still use the placeholder values `fabricinfra` and
+  `<console-svc>`. Replace them with `$NS` and the console Service name from
+  the CI environment before committing.
+- Assertions 3–6 cover **every** endpoint of **every** node, discovered from
+  the `fabric-ansible-collection/*` labels. Adding peers or orderer nodes
+  needs no change here.
+- Sub-tasks 1.3b and 1.4b must be complete before assertions 3–6 can pass.
 
 ---
 
@@ -950,17 +1179,26 @@ A Step 1 delivery is considered complete when all of the following pass:
 5. The `nginx/expose-none` leg runs the tutorial playbooks inside the KIND
    cluster via a Kubernetes Job (sub-task 1.5) and all six reachability
    assertions pass (sub-task 1.6): no Ingress objects for CA/peer/orderer;
-   console health endpoint returns HTTP 200 in-cluster; peer (7051), orderer
-   (7050), and CA (7054) native ports are reachable via ephemeral pods; ingress
-   FQDNs resolve to Service ClusterIPs, not the nginx ClusterIP.
-6. Component Kubernetes Services in `expose-none` mode are patched with `port: 443` (sub-task 1.3b), allowing in-cluster traffic to route successfully to container targetPorts without mutating console registry `api_url` entries.
+   console health endpoint returns HTTP 200 in-cluster; one Service per
+   endpoint exists with the expected `443 → targetPort` and ready backends;
+   every operations FQDN answers `/healthz` on `:443`; every API, CA, grpcweb
+   and admin FQDN accepts TLS on `:443`; each endpoint FQDN resolves to its
+   own Service's ClusterIP.
+6. In `expose-none` mode the collection creates **one ClusterIP Service per
+   endpoint** (CA: `ca`, `operations`; peer: `peer`, `operations`, `grpcweb`;
+   orderer: `orderer`, `admin`, `operations`, `grpcweb`), each mapping `443`
+   to that endpoint's native port (sub-task 1.3b), with **one CoreDNS rewrite
+   per endpoint type** (sub-task 1.4b). The operator's own Services are left
+   unmodified, and console registry entries are not mutated.
 7. Cluster-local domain handling (sub-tasks 1.1 and 1.1b):
-   - Setting `ingress_domain: <anything>.svc.<cluster_domain>` with all
-     `expose_*: false` runs without error; no CoreDNS rewrites are applied and
-     the Service port-patch block is skipped.
-   - Setting `ingress_domain: <anything>.svc.<cluster_domain>` with any
+   - Setting `ingress_domain: <namespace>.svc.<cluster_domain>` with all
+     `expose_*: false` runs without error: the per-endpoint Services are
+     created and no CoreDNS rewrite is applied.
+   - Setting `ingress_domain: <namespace>.svc.<cluster_domain>` with any
      `expose_*: true` causes the play to fail immediately with a message listing
      the conflicting flags.
+   - Setting any other `*.<cluster_domain>` value (e.g. `svc.cluster.local`)
+     fails immediately, naming the only supported form.
    - The cluster domain is auto-discovered from a pod's `/etc/resolv.conf`; a
      fallback warning is printed (not an error) when discovery fails.
 8. `docs/source` builds without warnings (`make -C docs html`).

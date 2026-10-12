@@ -96,6 +96,32 @@ natively supported by `fabric-operator` (sub-task 3.15).
 peers, orderers and the console (see PRE-ANALYSIS §4.4). No Step 1 sub-task
 deletes or neutralises them.
 
+**Source references** (upstream
+[`hyperledger-labs/fabric-operator`](https://github.com/hyperledger-labs/fabric-operator),
+`main` branch, checked 2026-10-12). For every component the same three-layer
+pattern applies — a generic resource manager performs the actual
+`client.Create`, a per-component "override" builds the per-FQDN
+`IngressSpec`, and a per-component reconcile function wires the two together
+and calls them on every reconcile loop:
+
+| Layer | File | Line(s) |
+|---|---|---|
+| Generic `Ingress` manager — actual `client.Create()` call | [`pkg/manager/resources/ingress/manager.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/manager/resources/ingress/manager.go#L57-L71) | `Reconcile()` L57, `Client.Create(...)` **L71** |
+| Factory wiring the override into the generic manager | [`pkg/manager/resources/manager/manager.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/manager/resources/manager/manager.go#L158) | `CreateIngressManager()` L158 |
+| **Console** — FQDN(s) built | [`pkg/offering/k8s/console/override/ingress.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/console/override/ingress.go#L49-L56) | `CommonIngress()` L49, `consolehost` **L56** |
+| **Console** — manager created / reconciled | [`pkg/offering/k8s/console/console.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/console/console.go#L81) | `CreateIngressManager(...)` L81, called from L162, `ReconcileIngressManager()` L175, `IngressManager.Reconcile(...)` L188 |
+| **CA** — FQDNs built (`-ca`, `-operations`) | [`pkg/offering/k8s/ca/override/ingress.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/ca/override/ingress.go#L49-L58) | `CommonIngress()` L49, `apihost` **L57**, `operationshost` **L58** |
+| **CA** — manager created / reconciled | [`pkg/offering/k8s/ca/ca.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/ca/ca.go#L83) | `CreateIngressManager(...)` L83, called from L194, `ReconcileIngressManager()` L202, `IngressManager.Reconcile(...)` L215/221 |
+| **Peer** — FQDNs built (`-peer`, `-operations`, `-grpcweb`) | [`pkg/offering/k8s/peer/override/ingress.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/peer/override/ingress.go#L49-L58) | `CommonIngress()` L49, `apihost` **L56**, `operationshost` **L57**, `grpcwebhost` **L58** |
+| **Peer** — manager created / reconciled | [`pkg/offering/k8s/peer/peer.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/peer/peer.go#L89) | `CreateIngressManager(...)` L89, called from L99, `ReconcileIngressManager()` L274, `IngressManager.Reconcile(...)` L287/293 |
+| **Orderer** — FQDNs built (`-orderer`, `-operations`, `-grpcweb`, `-admin`) | [`pkg/offering/k8s/orderer/override/ingress.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/orderer/override/ingress.go#L50-L143) | `CommonIngress()` L50, `apihost` **L58**, `operationshost` **L59**, `grpcwebhost` **L60**, `adminhost` **L143** (gated on Fabric ≥ 2.4.1/2.5.1) |
+| **Orderer** — manager created / reconciled | [`pkg/offering/k8s/orderer/node.go`](https://github.com/hyperledger-labs/fabric-operator/blob/main/pkg/offering/k8s/orderer/node.go#L74) | `CreateIngressManager(...)` L74, called from L236, `ReconcileIngressManager()` L244, `IngressManager.Reconcile(...)` L257/263 |
+
+Each `*IngressManager.Reconcile()` call is unconditional on this `main` branch
+— nothing in the operator's current config lets a caller opt out of `Ingress`
+creation, which is exactly why no Step 1 sub-task can "neutralise" these
+objects from the Ansible side alone (confirms B2's impact below).
+
 **Impact.** The goal "nothing is exposed through the NGINX ingress controller"
 cannot be met, and assertion 1 of sub-task 1.6 ("No external Ingress objects")
 will always fail.

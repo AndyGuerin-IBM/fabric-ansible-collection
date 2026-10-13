@@ -524,3 +524,13 @@ fix in the code Variables and facts
 * remove discovery vua kubectl exec ... awk
 * make sure all relevant roles and playbook have access to the required variables fix incorrect incluse_tasks path and avoir implicit dependeciens between roles
 * Correctly distinguish external domains, Kubernetes Service FQDNs, and internal domains. Keep B3-related rules optional so they do not block Step 1
+
+## Fix review step 1 Implementation mistakes part Organization roles
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
+fix Organization roles
+
+* kubernetes.core tasks in endorsing_organization / ordering_organization only when a component is not exposed (opt-in guard)
+* operator CR names: lower case without non alphanumeric characters, one set of Services per ordering service node
+* register the module outputs instead of the undefined peer_api_url, ca_api_url, orderer_api_url
+* no certificate_authority role: CA tasks go in both organization roles

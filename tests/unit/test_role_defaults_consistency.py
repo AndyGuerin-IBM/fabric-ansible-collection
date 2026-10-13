@@ -18,7 +18,16 @@ SHARED_VARIABLES = [
     'expose_peer',
     'expose_orderer',
     'cluster_domain',
+    'namespace',
 ]
+
+# Shared variables each role reads, and must therefore declare in its own defaults.
+ROLE_READS = {
+    'fabric_console': ['ingress_type', 'expose_console', 'expose_ca', 'expose_peer', 'expose_orderer', 'cluster_domain', 'namespace'],
+    'hlfsupport_console': ['ingress_type', 'expose_console', 'expose_ca', 'expose_peer', 'expose_orderer', 'cluster_domain', 'namespace'],
+    'endorsing_organization': ['expose_ca', 'expose_peer', 'namespace'],
+    'ordering_organization': ['expose_ca', 'expose_orderer', 'namespace'],
+}
 
 
 def _role_defaults():
@@ -37,7 +46,7 @@ def test_shared_default_is_consistent(variable):
     assert len(set(map(repr, values.values()))) == 1, '{0} has different defaults: {1}'.format(variable, values)
 
 
-@pytest.mark.parametrize('role', ['fabric_console', 'hlfsupport_console'])
-def test_console_roles_declare_the_variables_they_read(role):
-    missing = [v for v in SHARED_VARIABLES if v not in _role_defaults()[role]]
+@pytest.mark.parametrize('role', sorted(ROLE_READS))
+def test_roles_declare_the_variables_they_read(role):
+    missing = [v for v in ROLE_READS[role] if v not in _role_defaults()[role]]
     assert not missing, '{0} reads but does not declare: {1}'.format(role, missing)

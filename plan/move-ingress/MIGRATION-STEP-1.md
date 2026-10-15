@@ -1181,16 +1181,17 @@ in-cluster Ansible Job from sub-task 1.5 completes.
   _Failure indicates_: an `expose_*` flag was not honoured by the operator, or
   the Ansible role created Ingress objects despite `expose_*: false`.
 
-- [ ] **Assertion 2 — Console ClusterIP Service responds** at its in-cluster URL:
+- [ ] **Assertion 2 — Console ClusterIP Service responds** at its in-cluster
+  URL, over HTTPS (self-signed certificate, hence `-k`), on the unauthenticated
+  `/health` path (see sub-task 1.3; `/ak/api/v3/health` answers 401):
   ```bash
-  kubectl run curl-console \
-    --image=curlimages/curl:latest --restart=Never --rm -i \
-    --namespace fabricinfra \
-    -- curl -sf \
-    https://<console-svc>.fabricinfra.svc.cluster.local:3000/health
+  NS="${NAMESPACE:-default}"
+  kubectl run curl-console --image=curlimages/curl:8.10.1 \
+    --restart=Never --rm -i --namespace "$NS" -- \
+    curl -skf "https://${CONSOLE_NAME:-hlf-console}.${NS}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000/health"
   ```
   _Failure indicates_: the console pod is not running, the Service selector is
-  wrong, or the health endpoint path has changed.
+  wrong, or the protocol or the health path changed.
 
 - [ ] **Assertions 3–6 — common preamble.** Endpoints are discovered from
   the labelled Services of sub-task 1.3b, so no node name is hardcoded:
@@ -1301,9 +1302,9 @@ in-cluster Ansible Job from sub-task 1.5 completes.
   expected are wrapped as `rc=0; cmd || rc=$?`.
 
 **Relevant context:**
-- Assertions 1–2 still use the placeholder values `fabricinfra` and
-  `<console-svc>`. Replace them with `$NS` and the console Service name from
-  the CI environment before committing.
+- Assertion 1 still uses the placeholder value `fabricinfra`: replace it with
+  `$NS` from the CI environment before committing. Assertion 2 already takes
+  the namespace, the console name and the cluster domain from the environment.
 - Assertions 3–6 cover **every** endpoint of **every** node, discovered from
   the `fabric-ansible-collection/*` labels. Adding peers or orderer nodes
   needs no change here.

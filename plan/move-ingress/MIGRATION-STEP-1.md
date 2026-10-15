@@ -1087,16 +1087,27 @@ inlined in the CI script) must specify:
   installs for the `expose-all` leg. Base the image on
   `hyperledger/fabric-tools:<version>` and layer Ansible on top; document the
   resulting Dockerfile at `.github/docker/ansible-runner/Dockerfile`.
-- **`restartPolicy: Never`** — failures surface as a failed Job rather than
-  silent retries.
-- **Tutorial files mount**: a `ConfigMap` (`tutorial-files`) created by a
-  preceding CI step (`kubectl create configmap tutorial-files --from-file=tutorial/`)
-  mounted at `/workspace/tutorial`.
+- **`restartPolicy: Never`** and `backoffLimit: 0` — failures surface as a
+  failed Job rather than silent retries.
+- **Tutorial files in the image**: the `tutorial/` directory is copied into the
+  image at `/workspace/tutorial` and the image is rebuilt on every CI run. A
+  ConfigMap mount is not an option: it is read-only (the playbooks write their
+  JSON identity files into the working directory), it flattens the directory
+  tree (`--from-file` does not recurse) and it is limited to 1 MiB.
+- **Permissions**: a `ServiceAccount` (`ansible-runner`) with a `Role` and a
+  `RoleBinding` in the network namespace, referenced by `serviceAccountName`.
+  The Job creates and deletes the per-endpoint Services (sub-task 1.3b), so the
+  role needs `get`, `list`, `create`, `update`, `patch` and `delete` on
+  `services`, and `get` / `list` on `deployments` for the console readiness
+  wait. `kubernetes.core` uses the in-cluster configuration: no kubeconfig is
+  mounted. Start from this minimal set and widen it only on a `Forbidden`
+  error.
 - **`api_endpoint` override**: the in-cluster console Service URL
   `https://<console-svc>.<namespace>.svc.<cluster_domain>:3000` (HTTPS, see
   sub-task 1.3).
 - **Environment variables** injected for: `INGRESS_TYPE`, `EXPOSE_CA`,
-  `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSE_CONSOLE`, `WAIT_TIMEOUT`.
+  `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSE_CONSOLE`, `WAIT_TIMEOUT`,
+  `K8S_NAMESPACE`.
 - **Job command** (with `set -e`):
   ```bash
   set -e
@@ -1117,21 +1128,24 @@ inlined in the CI script) must specify:
   `$GITHUB_ENV`. Keep `INGRESS_TYPE=nginx`.
 - [ ] Create `.github/docker/ansible-runner/Dockerfile` based on
   `hyperledger/fabric-tools:<version>` with Ansible and
-  `hyperledger.fabric_ansible_collection` layered on top.
+  `hyperledger.fabric_ansible_collection` layered on top, and the `tutorial/`
+  directory copied to `/workspace/tutorial`.
+- [ ] Create `.github/k8s/ansible-runner-job.yml` with the `ServiceAccount`,
+  `Role`, `RoleBinding` and `Job`.
 - [ ] Add the following CI steps, each guarded by
   `if: matrix.scenario == 'expose-none'`:
-  1. **Build and load runner image**: `docker build -t ansible-runner:ci
-     .github/docker/ansible-runner/ && kind load docker-image ansible-runner:ci`
-  2. **Create tutorial ConfigMap**:
-     `kubectl create configmap tutorial-files --from-file=tutorial/`
-  3. **Apply Job manifest**:
+  1. **Build and load runner image**: build the collection tarball, then
+     `docker build -t ansible-runner:ci -f .github/docker/ansible-runner/Dockerfile .`
+     (the repository is the build context, so the image contains `tutorial/`
+     and the tarball), then `kind load docker-image ansible-runner:ci`
+  2. **Apply the manifests** (ServiceAccount, Role, RoleBinding, Job):
      `kubectl apply -f .github/k8s/ansible-runner-job.yml`
-  4. **Wait for Job completion**:
+  3. **Wait for Job completion**:
      `kubectl wait --for=condition=complete --timeout=20m job/ansible-runner`
-  5. **Retrieve logs** (unconditional, runs even on failure — use
+  4. **Retrieve logs** (unconditional, runs even on failure — use
      `if: always() && matrix.scenario == 'expose-none'`):
      `kubectl logs job/ansible-runner`
-  6. **Assert Job succeeded**:
+  5. **Assert Job succeeded**:
      ```bash
      phase=$(kubectl get job ansible-runner \
        -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
@@ -1173,7 +1187,8 @@ in-cluster Ansible Job from sub-task 1.5 completes.
 - [ ] **Assertion 1 — No external Ingress objects for CA/peer/orderer**
   (runner-side, no ephemeral pod needed):
   ```bash
-  count=$(kubectl get ingress -n fabricinfra -o name \
+  NS="${K8S_NAMESPACE:-default}"
+  count=$(kubectl get ingress -n "$NS" -o name \
     | grep -cvE 'console' || true)
   [ "$count" -eq 0 ] \
     || (echo "Unexpected Ingress objects found for non-console components" && exit 1)
@@ -1302,9 +1317,12 @@ in-cluster Ansible Job from sub-task 1.5 completes.
   expected are wrapped as `rc=0; cmd || rc=$?`.
 
 **Relevant context:**
-- Assertion 1 still uses the placeholder value `fabricinfra`: replace it with
-  `$NS` from the CI environment before committing. Assertion 2 already takes
-  the namespace, the console name and the cluster domain from the environment.
+- Nothing is hardcoded: the namespace, the console name and the cluster domain
+  of assertions 1 and 2 come from the CI environment. Assertions 3–6 take the
+  list of endpoints from the Services the collection created (labels), so every
+  organization (Org1, Org2, …) and every node is covered, whatever the CI
+  namespace, domain (`default`, `<ip>.nip.io`, `localho.st`) or randomised
+  names.
 - Assertions 3–6 cover **every** endpoint of **every** node, discovered from
   the `fabric-ansible-collection/*` labels. Adding peers or orderer nodes
   needs no change here.

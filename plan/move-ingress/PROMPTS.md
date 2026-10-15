@@ -520,3 +520,8 @@ A few adjustments are needed for it to work end to end. In particular, every end
 As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
 
 fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md by removing discovery via kubectl exec ... awk
+
+## Fix review step 1 Implementation mistakes part Organization roles
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
+fix Organization roles

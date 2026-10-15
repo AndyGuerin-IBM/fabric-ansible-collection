@@ -501,47 +501,61 @@ installed; applying it now avoids a diff in Step 2.
 
 ## Sub-task 1.3 — Console wait-logic for `expose_console` flag
 
-**Intent:** Split the existing monolithic console-wait block into
-`expose_console: true` and `expose_console: false` branches. When
-`expose_console: false` the collection skips route/ingress discovery, polls the
-in-cluster ClusterIP Service URL directly, and prints an informational notice
-instead of a public URL.
+**Intent:** Split the existing console-wait block into `expose_console: true`
+and `expose_console: false` branches. When `expose_console: false` the
+collection skips route/ingress discovery, relies on the readiness of the console
+Deployment, and prints an informational notice instead of a public URL.
+
+**No `uri` call to an in-cluster name.** The Ansible tasks run on the control
+node, which is outside the cluster and cannot resolve
+`<console>.<ns>.svc.<cluster_domain>`. The wait therefore reads the state of
+the console Deployment through the Kubernetes API (`kubernetes.core.k8s_info`,
+or the `wait: yes` of `kubernetes.core.k8s`), which needs a kubeconfig but no
+access to cluster DNS. The roles already do this in "Wait for console
+deployment to start"; the `expose_console: false` branch ends there.
+
+**Facts about the console Service** (checked on a `fabric-operator` 1.0.9
+cluster): `https://<console>.<ns>.svc.<cluster_domain>:3000` answers on
+**HTTPS** (an `http://` request gets no answer); `/` and `/health` return 200
+without authentication; `/ak/api/v3/health` returns 401. A URL built for an
+in-cluster client (the Job of sub-task 1.5, assertion 2 of sub-task 1.6) is
+therefore `https://<console>.<ns>.svc.{{ cluster_domain }}:3000/health`, with the
+cluster domain taken from `cluster_domain` and never a literal `cluster.local`.
+
 
 **Expected outcomes:**
-- `roles/hlfsupport_console/tasks/k8s/create.yml` and
-  `roles/fabric_console/tasks/k8s/create.yml` handle `expose_console: false`
-  correctly on the nginx path.
-- When `expose_console: true` (the default) the existing behaviour is preserved.
-- When `expose_console: false` the in-cluster URL
-  `http://{{ console }}.{{ namespace }}.svc.cluster.local:3000` is used for the
-  health-check and a notice is printed.
+- `expose_console: true` (default): existing behaviour is preserved.
+- `expose_console: false`: no Ingress wait and no `uri` call; the play ends when
+  the Deployment is ready and prints a notice that the console is not exposed.
+
+**Tasks** (five, none of them an in-cluster `uri`):
+1. *Wait for console Ingress to exist* — `ingress_type == 'nginx' and expose_console | bool`
+2. *Set console URL from Ingress* — same guard
+3. *Wait for console to respond (public URL)* (`uri`) — `expose_console | bool`
+4. *Print console URL* — `expose_console | bool`
+5. *Print console exposition notice* — `not expose_console | bool`
+
+The "in-cluster Service URL" `uri` task of MIGRATION-PLAN.md §5.5 is dropped
+for the reasons above.
 
 **Todo list:**
-- [ ] In `roles/hlfsupport_console/tasks/k8s/create.yml`, locate the existing
-  three tasks: "Wait for console Ingress to exist", "Set console URL", and
-  "Wait for console to respond".
-- [ ] Replace them with the five-task conditional block from
-  MIGRATION-PLAN.md §5.5:
-  - Nginx `Wait for console Ingress` guarded by
-    `ingress_type == 'nginx' and expose_console | bool`.
-  - Nginx `Set console URL from Ingress` with same guard.
-  - `Wait for console to respond (in-cluster Service URL)` guarded by
-    `not expose_console | bool`.
-  - `Wait for console to respond (public URL)` guarded by
-    `expose_console | bool`.
-  - `Print console URL` guarded by `expose_console | bool`.
-  - `Print console exposition notice` guarded by `not expose_console | bool`.
-- [ ] Apply the same pattern to
-  `roles/fabric_console/tasks/k8s/create.yml` (line 57 area).
+- [ ] In `roles/hlfsupport_console/tasks/k8s/create.yml`, apply the five tasks
+  to the existing Ingress wait, URL and `uri` tasks.
+- [ ] In `roles/fabric_console/tasks/k8s/create.yml` and in
+  `tutorial/00-deploy-fabric-console.yml`, apply tasks 4 and 5 to the final
+  print.
+- [ ] Check the `apiVersion` of `IBPConsole`: the roles read it as
+  `ibp.com/v1alpha2` (`k8s_info`) while the templates create `ibp.com/v1beta1`.
+  Use one version served by the CRD in both.
 - [ ] Do **not** add any Gateway API (`ingress_type == 'gateway-api'`) branches
   yet — those belong in Step 2.
-- [ ] Run `ansible-lint` on both modified task files.
+- [ ] Run `ansible-lint` on the modified files.
 
 **Relevant context:**
-- Full task YAML for all five tasks: MIGRATION-PLAN.md §5.5
-- Note: the Gateway API `Wait for console HTTPRoute` tasks should be
-  **omitted** from this step; add them as `when: false` stubs is unnecessary.
-- In-cluster Service URL pattern: `http://{{ console }}.{{ namespace }}.svc.cluster.local:3000`
+- Task YAML for the Ingress tasks: MIGRATION-PLAN.md §5.5 (without its
+  in-cluster `uri` task).
+- The in-cluster console URL is only for clients running inside the cluster
+  (Job, CI assertions), never for the control node.
 
 ---
 
@@ -1079,7 +1093,8 @@ inlined in the CI script) must specify:
   preceding CI step (`kubectl create configmap tutorial-files --from-file=tutorial/`)
   mounted at `/workspace/tutorial`.
 - **`api_endpoint` override**: the in-cluster console Service URL
-  `http://<console-svc>.<namespace>.svc.cluster.local:3000`.
+  `https://<console-svc>.<namespace>.svc.<cluster_domain>:3000` (HTTPS, see
+  sub-task 1.3).
 - **Environment variables** injected for: `INGRESS_TYPE`, `EXPOSE_CA`,
   `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSE_CONSOLE`, `WAIT_TIMEOUT`.
 - **Job command** (with `set -e`):
@@ -1172,7 +1187,7 @@ in-cluster Ansible Job from sub-task 1.5 completes.
     --image=curlimages/curl:latest --restart=Never --rm -i \
     --namespace fabricinfra \
     -- curl -sf \
-    http://<console-svc>.fabricinfra.svc.cluster.local:3000/ak/api/v3/health
+    https://<console-svc>.fabricinfra.svc.cluster.local:3000/health
   ```
   _Failure indicates_: the console pod is not running, the Service selector is
   wrong, or the health endpoint path has changed.
@@ -1366,7 +1381,8 @@ Scenario A (in-cluster only) tutorial.
 **Relevant context:**
 - Scenario A rationale: PRE-ANALYSIS.md §2.4 and §2.5.
 - Console notice message implementation: sub-task 1.3 above.
-- In-cluster console URL: `http://{{ console }}.{{ namespace }}.svc.cluster.local:3000`
+- In-cluster console URL: `https://{{ console }}.{{ namespace }}.svc.{{ cluster_domain }}:3000`
+  (health path `/health`, see sub-task 1.3)
 
 ---
 

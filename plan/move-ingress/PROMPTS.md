@@ -531,3 +531,11 @@ fix Organization roles
 
 As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
 
+
+## Fix review step 1 Implementation mistakes part Console
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
+
+`uri http://<console>.<ns>.svc.cluster.local:3000` runs on the Ansible control node, which cannot resolve in-cluster names. → Check the Deployment readiness via `k8s_info`.
+
+fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md

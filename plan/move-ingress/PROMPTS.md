@@ -525,3 +525,9 @@ fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md by removing discovery via
 
 As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
 fix Organization roles
+
+
+## Fix review step 1 Implementation mistakes part Variables and facts, **Cluster-local `ingress_domain`
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
+

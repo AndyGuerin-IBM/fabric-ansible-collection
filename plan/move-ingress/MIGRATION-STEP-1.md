@@ -327,6 +327,29 @@ and `roles/hlfsupport_console/tasks/k8s/create.yml`, right after the existing
 
 ## Sub-task 1.1b — Cluster-local domain validation guard
 
+**Dependencies:** sub-task 1.1 (`cluster_domain`) and the per-endpoint
+Services of sub-task 1.3b: without those Services, no cluster-local value can
+work ([REVIEW-MIGRATION-PLAN-STEP-1.md](./REVIEW-MIGRATION-PLAN-STEP-1.md),
+"Cluster-local `ingress_domain`").
+
+**Why only `<namespace>.svc.<cluster_domain>`:** a Service FQDN has the form
+`<svc>.<ns>.svc.<cluster_domain>`. With a domain `<x>.svc.<cluster_domain>`,
+the operator's FQDN `<ns>-<cr>-<endpoint>.<x>.svc.<cluster_domain>` names the
+Service `<ns>-<cr>-<endpoint>` in namespace `<x>`. Sub-task 1.3b creates these
+Services in the components' namespace, so `<x>` must be that namespace. Any
+other value (`svc.cluster.local`, `cluster.local`, another namespace) matches
+no Service.
+
+**Why this mode:** the mode itself needs nothing beyond sub-task 1.3b: setting
+the console domain to `<namespace>.svc.<cluster_domain>` is enough. It is the
+only expose-none setup that needs no DNS change, because the FQDNs are already
+Service names. The CoreDNS rewrites of sub-task 1.4b are written by the CI
+script only; on a real cluster, `expose_*: false` with an external domain
+needs the same rewrites in the cluster DNS, which is not always possible on
+managed clusters (GKE uses kube-dns, not CoreDNS). This sub-task only adds the
+checks that make a wrong value fail at once, instead of in the modules' health
+waits (`wait_timeout`, up to several minutes).
+
 **Intent:** When `ingress_domain` is a cluster-local suffix (detected by
 `ingress_domain_is_cluster_local: true` from sub-task 1.1, i.e.
 `ingress_domain == <namespace>.svc.<cluster_domain>`), every component FQDN
@@ -418,6 +441,31 @@ passed as `k8s_domain_facts_domain`:
 - Sub-task 1.4b skips its CoreDNS rewrites when the domain is cluster-local;
   sub-task 1.3b does **not** skip (its Services are what makes cluster-local
   FQDNs resolvable). This sub-task only handles the hard-error cases.
+- The operator still creates its Ingress objects, with cluster-local hosts
+  (B2). nginx would route a client presenting such an SNI, but no external
+  DNS name points there. The B2 decision is unchanged by this mode.
+
+**Open points (resolve before implementing):**
+- **Console FQDN.** Sub-task 1.3b creates no Service for the console, so
+  `<ns>-<console>-console.<ns>.svc.<cluster_domain>` resolves to nothing. In
+  the CI expose-none leg, the nip.io wildcard still sends the console FQDN to
+  nginx; with a cluster-local domain, nothing does. Check in the operator spike
+  whether anything in the cluster dials that FQDN (console backend, deployer),
+  and whether the console UI still works through `kubectl port-forward` when
+  its host URL is the cluster-local FQDN. If needed, extend sub-task 1.3b with
+  the console endpoints.
+- **Where the guard runs.** The guard runs in the console roles (sub-task 1.1).
+  It is skipped when the console is created outside the collection (Helm,
+  kubectl, GitOps) or when the components are created with the modules
+  directly. To be settled together with the roles-versus-modules question.
+- **CI coverage.** The expose-none leg (sub-task 1.5) uses a nip.io domain, so
+  it never runs this mode; only the unit test above covers the guard. Options:
+  a third matrix leg with `console_domain: <ns>.svc.cluster.local`, or a
+  documented manual check.
+- **No migration.** The domain is written into the node certificates (SANs)
+  and the console registry when components are created. Switching an existing
+  network to a cluster-local domain means recreating it; the no-expose
+  tutorial (sub-task 1.8) should say so.
 
 ---
 
@@ -1357,9 +1405,6 @@ A Step 1 delivery is considered complete when all of the following pass:
      the conflicting flags.
    - Setting any other `*.<cluster_domain>` value (e.g. `svc.cluster.local`)
      fails immediately, naming the only supported form.
-   - Each role declares in its own `defaults/main.yml` the new variables it
-     reads (sub-task 1.1 table); no role reads a variable declared only in
-     another role.
    - The cluster domain is auto-discovered from the `kube-system/coredns`
      ConfigMap (`kubernetes` plugin line); when discovery fails, a warning is
      printed (not an error) and `cluster.local` is used. An explicit
@@ -1367,3 +1412,6 @@ A Step 1 delivery is considered complete when all of the following pass:
 8. `docs/source` builds without warnings (`make -C docs html`).
 9. No Gateway API CRD, template, task, or Kubernetes resource is introduced —
    the Gateway API path is entirely absent from the codebase at this stage.
+10. Each role declares in its own `defaults/main.yml` the new variables it
+    reads (sub-task 1.1 table); no role reads a variable declared only in
+    another role.

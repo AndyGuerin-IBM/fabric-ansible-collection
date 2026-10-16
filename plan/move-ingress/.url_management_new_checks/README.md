@@ -60,4 +60,13 @@ cd plan/move-ingress/.url_management_new_checks/network_domains
 ANSIBLE_ROLES_PATH=$PWD/roles ansible-playbook -i localhost, -c local test.yml
 ```
 
+## `job/` — in-cluster runner prototype (MIGRATION-STEP-1 sub-task 1.5)
+
+| Path | Content |
+|---|---|
+| `Dockerfile` | runner image, on top of the repository's collection image (`docker build -t fabric-ansible-collection:ci .`) |
+| `rbac.yml`, `job.yml` | ServiceAccount / Roles and the Job, as in sub-task 1.5 (`kubectl apply --dry-run=server` passes) |
+| `probe.yml` | playbook run in a pod with the `ansible-runner` ServiceAccount: reads `kube-system/coredns`, calls `console_incluster_url` (both OK) |
+| `runner-build.log` | runner image build |
+
 Not kept: the collection build tarball (197 MB, rebuild with `ansible-galaxy collection build`) and a copy of `tutorial/common-vars.yml`.

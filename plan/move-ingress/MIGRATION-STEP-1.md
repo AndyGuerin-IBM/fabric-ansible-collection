@@ -862,6 +862,15 @@ node after its module call. The Ingress is kept but no longer served.
 - [ ] Make `deploy-console.sh` read `common-vars.yml` the same way, so the
   console gets the same `hlf_network_domain` as the organizations (it
   renders `spec.deployer.domain`, sub-task 1.3a).
+- [ ] For the in-cluster Job (sub-task 1.5):
+  - take `TEST_RUN_ID` from the environment when set, instead of generating
+    it (Step 0 stamping), so two runs can target the same network;
+  - `KEEP_NETWORK=true`: skip the final `join_network.sh destroy` and the
+    cleanup trap;
+  - `RUN_TESTS_MODE=destroy`: patch the vars files, then only run
+    `join_network.sh destroy`;
+  - skip the `.venv` activation and `_cfg/console-env.sh` sourcing when they
+    don't exist (already the case for `console-env.sh`).
 - [ ] Confirm that `INGRESS_TYPE`, `EXPOSE_CA`, `EXPOSE_PEER`, `EXPOSE_ORDERER`,
   `EXPOSE_PEER_OPERATIONS`, `EXPOSE_ORDERER_OPERATIONS`, and `EXPOSE_GRPCWEB`
   all default to safe values when not explicitly set.
@@ -1060,43 +1069,158 @@ cluster** using a Kubernetes Job.
 - The `expose-none-internal` leg is the first end-to-end run of scenario B
   (URL-MANAGEMENT-NEW.md §9 check 5).
 
-**Job manifest specification:**
+**Job design.** Three decisions settle the review's in-cluster Job findings
+(read-only ConfigMap, flattened tree, 1 MiB limit, no ServiceAccount):
 
-The Kubernetes Job YAML (committed to `.github/k8s/ansible-runner-job.yml` or
-inlined in the CI script) must specify:
+| # | Gap | Decision |
+|---|---|---|
+| J1 | How the tutorial reaches the Job | **Bake it into the runner image.** `tutorial/` (436 KB, ~80 files, one binary chaincode package `fabcar@1.0.0.tgz`) is copied into a writable directory of the image. No ConfigMap: no read-only mount, no flattening, no size limit. The playbooks write their `*.json` / `*.bin` identity and config files next to themselves (`tutorial/.gitignore`), which now just works. |
+| J2 | ServiceAccount and RBAC | A dedicated ServiceAccount `ansible-runner` with a namespaced Role, plus a small Role in `kube-system` for the CoreDNS ConfigMap (manifest below). |
+| J3 | Variable injection inside the Job | **The Job runs `run-tests.sh`**, not the tutorial scripts directly. It thus gets the same `yq` patching as the runner leg (connection, `expose_*`, domains, sub-task 1.4) and the same build → join → deploy → destroy sequence. `API_ENDPOINT` is `console_incluster_url`. |
 
-- **Container image**: an image containing Python 3, Ansible,
-  `hyperledger.fabric_ansible_collection` (installed from the collection
-  tarball built in the same CI run), the Hyperledger Fabric `peer` binary, and
-  `configtxlator`. Use the same set of dependencies that the Actions runner
-  installs for the `expose-all` leg. Base the image on
-  `hyperledger/fabric-tools:<version>` and layer Ansible on top; document the
-  resulting Dockerfile at `.github/docker/ansible-runner/Dockerfile`.
-- **`restartPolicy: Never`** — failures surface as a failed Job rather than
-  silent retries.
-- **Tutorial files mount**: a `ConfigMap` (`tutorial-files`) created by a
-  preceding CI step (`kubectl create configmap tutorial-files --from-file=tutorial/`)
-  mounted at `/workspace/tutorial`.
-- **`api_endpoint` override**: `console_incluster_url`,
-  `https://<console-svc>.<namespace>.svc.<cluster_domain>:3000`. The console
-  serves **HTTPS** on 3000 with a certificate for the `exposed_domain` host
-  (checked 2026-10-16, check 4); the modules don't verify certificates, so
-  this works.
-- **ServiceAccount and RBAC**: the Job creates per-endpoint Services
-  (`services`: create/get/delete), reads `kube-system/coredns`
-  (`configmaps`: get) and, with `neutralize_node_ingresses`, patches node CRs
-  (`ibpcas`, `ibppeers`, `ibporderers`: get/patch).
-- **Environment variables** injected for: `INGRESS_TYPE`, `EXPOSE_CA`,
-  `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSE_CONSOLE`, `EXPOSED_DOMAIN`,
-  `HLF_NETWORK_DOMAIN`, `CLUSTER_DOMAIN`, `WAIT_TIMEOUT`.
-- **Job command** (with `set -e`):
-  ```bash
-  set -e
-  cd /workspace/tutorial
-  bash build_network.sh build
-  bash join_network.sh join
-  bash deploy_smart_contract.sh
-  ```
+**Runner image** — `.github/docker/ansible-runner/Dockerfile`. It extends the
+collection image the repository already builds (`Dockerfile` at the root,
+published by `.github/workflows/main.yml`). That image already has Ansible,
+the collection, `kubernetes.core`, `fabric-sdk-py`, `openshift`, the Fabric
+`peer`, `osnadmin` and `configtxlator` binaries, and an entrypoint that works
+under a random UID. Only the test-only tools and files are added:
+
+```dockerfile
+# Built in CI from the repository root:
+#   docker build -t fabric-ansible-collection:ci .
+#   docker build -t ansible-runner:ci -f .github/docker/ansible-runner/Dockerfile .
+ARG BASE_IMAGE=fabric-ansible-collection:ci
+FROM ${BASE_IMAGE}
+# Test-only tools: jq, shasum (TEST_RUN_ID stamping), pip for yq.
+USER root
+RUN microdnf install -y jq perl-Digest-SHA python3-pip && microdnf clean -y all
+USER 7051
+# Python yq (run-tests.sh uses `yq -yi`, which mikefarah's yq does not support).
+RUN python3.9 -m pip install --user yq
+# Writable copy of the tests: run-tests.sh does `cd tutorial` relative to the repo root.
+COPY --chown=7051:0 .github/scripts /workspace/.github/scripts
+COPY --chown=7051:0 tutorial /workspace/tutorial
+USER root
+RUN chmod -R g=u /workspace
+USER 7051
+WORKDIR /workspace
+ENTRYPOINT [ "/docker-entrypoint.sh" ]
+CMD [ ".github/scripts/run-tests.sh" ]
+```
+
+- The base image is built in the **same** CI run from the checked-out commit,
+  so the Job tests the collection under test, not a published release.
+- **Built and tried on 2026-10-16** (local KIND, arm64): both images build;
+  the runner has `yq` (Python, `-yi` works), `jq`, `shasum`, `peer` 2.5.9,
+  `ansible-playbook`, `kubernetes.core` 2.4.0; `/workspace/tutorial` is
+  writable, also under a random UID with group 0 (OpenShift-style). Run as a
+  pod with the `ansible-runner` ServiceAccount, it read `kube-system/coredns`
+  through `kubernetes.core` (in-cluster token, no kubeconfig) and got HTTP
+  200 from `console_incluster_url`. The base image has no `pip`, `jq` or
+  `shasum`, hence the extra packages.
+- Fabric version: the base image builds `peer` v2.5.9, while the runner leg
+  installs 2.4.7 (`fvtest.yml`). Both talk to the same console-deployed
+  nodes; align them in Step 0 (already listed in REVIEW-MIGRATION-PLAN-STEP-0.md).
+- `run-tests.sh` must work without `_cfg/console-env.sh` (it already falls
+  back to environment variables) and skip the `.venv` activation when absent.
+
+**RBAC** — `.github/k8s/ansible-runner-rbac.yml`:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: ansible-runner, namespace: default}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ansible-runner, namespace: default}
+rules:
+  # Per-endpoint Services (sub-task 1.3b)
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, create, patch, update, delete]
+  # Node CRs: read for checks, patch for neutralize_node_ingresses (sub-task 1.3c)
+  - apiGroups: [ibp.com]
+    resources: [ibpcas, ibppeers, ibporderers]
+    verbs: [get, list, patch]
+  # Wait for the Ingress class after neutralization (sub-task 1.3c)
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ansible-runner, namespace: default}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ansible-runner}
+subjects: [{kind: ServiceAccount, name: ansible-runner, namespace: default}]
+---
+# cluster_domain lookup (sub-task 1.1): read only the coredns ConfigMap
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ansible-runner-coredns, namespace: kube-system}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [coredns]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ansible-runner-coredns, namespace: kube-system}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ansible-runner-coredns}
+subjects: [{kind: ServiceAccount, name: ansible-runner, namespace: default}]
+```
+
+**Checked on 2026-10-16** with `kubectl auth can-i --as
+system:serviceaccount:default:ansible-runner`: allowed to create/delete
+Services, patch `ibppeers`/`ibporderers`, read Ingresses and
+`kube-system/configmaps/coredns`; denied any other `kube-system` ConfigMap,
+creating `ibppeers` or Deployments, and reading Secrets. Both manifests pass
+`kubectl apply --dry-run=server`.
+
+The Job never creates CAs, peers or orderers itself: it asks the console's
+REST API, and the console's deployer and the operator create them with their
+own ServiceAccounts. `kubernetes.core` inside the pod authenticates with the
+mounted ServiceAccount token (in-cluster config); no kubeconfig is copied in.
+
+**Job** — `.github/k8s/ansible-runner-job.yml`:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata: {name: ansible-runner, namespace: default}
+spec:
+  backoffLimit: 0                 # a failed run must fail the CI step, not retry
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      serviceAccountName: ansible-runner
+      restartPolicy: Never
+      containers:
+        - name: runner
+          image: ansible-runner:ci
+          imagePullPolicy: Never  # loaded with `kind load docker-image`
+          envFrom:
+            - configMapRef: {name: ansible-runner-env}   # created by the CI step below
+          env:
+            - name: API_SECRET
+              valueFrom: {secretKeyRef: {name: ansible-runner-auth, key: API_SECRET}}
+```
+
+`ansible-runner-env` holds, from the leg's `$GITHUB_ENV`: `API_ENDPOINT`
+(= `console_incluster_url`, `https://hlf-console.default.svc.<cluster_domain>:3000`),
+`API_AUTHTYPE`, `API_KEY`, `K8S_NAMESPACE`, `INGRESS_TYPE`, `EXPOSE_CONSOLE`,
+`EXPOSE_CA`, `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSED_DOMAIN`,
+`HLF_NETWORK_DOMAIN`, `CLUSTER_DOMAIN`, `WAIT_TIMEOUT`. The console serves
+**HTTPS** on 3000 with a certificate for the `exposed_domain` host (checked
+2026-10-16, check 4); the modules don't verify certificates, so this works.
+
+**Teardown.** `run-tests.sh` destroys the network at the end
+(`join_network.sh destroy`). The sub-task 1.6 assertions need the network
+**alive**, so the first Job runs `run-tests.sh` with `KEEP_NETWORK=true`, and
+a last CI step runs a second Job, `ansible-runner-destroy`, with
+`RUN_TESTS_MODE=destroy` (both options added to `run-tests.sh` in sub-task
+1.4). The CI step generates `TEST_RUN_ID` once and passes it to both Jobs.
 
 **Todo list:**
 - [ ] Add a `scenario` matrix dimension to the `fvtest` job in
@@ -1112,42 +1236,66 @@ inlined in the CI script) must specify:
   `HLF_NETWORK_DOMAIN=cluster.local` and `CLUSTER_DOMAIN=cluster.local`,
   exported before `kind_with_nginx.sh` and the console deployment (the
   console must be **created** with `spec.deployer.domain`, finding F1).
-- [ ] Create `.github/docker/ansible-runner/Dockerfile` based on
-  `hyperledger/fabric-tools:<version>` with Ansible and
-  `hyperledger.fabric_ansible_collection` layered on top.
+- [ ] Create `.github/docker/ansible-runner/Dockerfile`,
+  `.github/k8s/ansible-runner-rbac.yml` and `.github/k8s/ansible-runner-job.yml`
+  as above.
 - [ ] Add the following CI steps, each guarded by
   `if: matrix.scenario != 'expose-all'`:
-  1. **Build and load runner image**: `docker build -t ansible-runner:ci
-     .github/docker/ansible-runner/ && kind load docker-image ansible-runner:ci`
-  2. **Create tutorial ConfigMap**:
-     `kubectl create configmap tutorial-files --from-file=tutorial/`
-  3. **Apply Job manifest**:
-     `kubectl apply -f .github/k8s/ansible-runner-job.yml`
-  4. **Wait for Job completion**:
-     `kubectl wait --for=condition=complete --timeout=20m job/ansible-runner`
-  5. **Retrieve logs** (unconditional, runs even on failure — use
-     `if: always() && matrix.scenario != 'expose-all'`):
-     `kubectl logs job/ansible-runner`
-  6. **Assert Job succeeded**:
+  1. **Build and load the images**:
      ```bash
-     phase=$(kubectl get job ansible-runner \
-       -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
-     [ "$phase" == "True" ] || exit 1
+     docker build -t fabric-ansible-collection:ci .
+     docker build -t ansible-runner:ci -f .github/docker/ansible-runner/Dockerfile .
+     kind load docker-image ansible-runner:ci
      ```
+  2. **Apply RBAC**: `kubectl apply -f .github/k8s/ansible-runner-rbac.yml`
+  3. **Create the Job inputs**:
+     ```bash
+     kubectl create configmap ansible-runner-env \
+       --from-literal=API_ENDPOINT="https://${CONSOLE_NAME}.${K8S_NAMESPACE}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000" \
+       --from-literal=API_AUTHTYPE="${API_AUTHTYPE}" --from-literal=API_KEY="${API_KEY}" \
+       --from-literal=K8S_NAMESPACE="${K8S_NAMESPACE}" --from-literal=KEEP_NETWORK=true \
+       --from-literal=TEST_RUN_ID="$(openssl rand -hex 20)" \
+       --from-literal=INGRESS_TYPE="${INGRESS_TYPE}" \
+       --from-literal=EXPOSE_CONSOLE="${EXPOSE_CONSOLE}" --from-literal=EXPOSE_CA="${EXPOSE_CA}" \
+       --from-literal=EXPOSE_PEER="${EXPOSE_PEER}" --from-literal=EXPOSE_ORDERER="${EXPOSE_ORDERER}" \
+       --from-literal=EXPOSED_DOMAIN="${EXPOSED_DOMAIN:-}" \
+       --from-literal=HLF_NETWORK_DOMAIN="${HLF_NETWORK_DOMAIN:-}" \
+       --from-literal=CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}" --from-literal=WAIT_TIMEOUT=1800
+     kubectl create secret generic ansible-runner-auth --from-literal=API_SECRET="${API_SECRET}"
+     ```
+  4. **Run the Job**: `kubectl apply -f .github/k8s/ansible-runner-job.yml`
+  5. **Wait for it** (fails fast on a failed Job):
+     ```bash
+     kubectl wait --for=jsonpath='{.status.conditions[?(@.status=="True")].type}'=Complete \
+       --timeout=60m job/ansible-runner \
+     || { kubectl get job ansible-runner -o jsonpath='{.status.conditions}'; exit 1; }
+     ```
+  6. **Retrieve logs** (`if: always() && matrix.scenario != 'expose-all'`):
+     `kubectl logs job/ansible-runner --all-containers`
+  7. **Reachability assertions** (sub-task 1.6), network still alive.
+  8. **Destroy** (`if: always() && matrix.scenario != 'expose-all'`): a
+     second Job, `ansible-runner-destroy`, same image and inputs plus
+     `RUN_TESTS_MODE=destroy`; wait for it and print its logs like steps 5–6.
 - [ ] Add `name: FV test (nginx / ${{ matrix.scenario }})` to the job.
-- [ ] Run `yamllint` on the modified workflow file.
-- [ ] Commit `.github/k8s/ansible-runner-job.yml` and
-  `.github/docker/ansible-runner/Dockerfile` as part of this sub-task.
+- [ ] Run `yamllint` on the workflow and the two manifests.
+- [ ] Try the Job locally first on the KIND cluster used for the
+  URL-MANAGEMENT-NEW.md checks (scenario C needs no console change; scenario B
+  needs the console re-created with `spec.deployer.domain`).
 
 **Relevant context:**
 - The `expose-all` leg is entirely unaffected by this sub-task — the `if:`
   conditions ensure the Job steps are skipped when `matrix.scenario == 'expose-all'`.
-- `tutorial-files` as a ConfigMap is read-only, flat (no subdirectories) and
-  limited to 1 MiB, while the playbooks write identity JSON files
-  (review, "Expose-none CI"). Copy it to an `emptyDir` in an init container,
-  or build the tutorial into the runner image.
-- The Job image must be available inside the KIND cluster (use
-  `kind load docker-image` after building locally or in CI).
+- A `kubectl wait --for=condition=complete` alone waits the full timeout
+  when the Job fails; the `jsonpath` form above returns as soon as the Job
+  has any final condition, and the `||` branch reports it.
+- The Job image must be available inside the KIND cluster (`kind load
+  docker-image`, `imagePullPolicy: Never`).
+- Each Job starts from a fresh copy of the image, so nothing patched by the
+  first Job survives into the destroy Job. Both therefore run `run-tests.sh`,
+  which re-applies the same patching, with the **same** `TEST_RUN_ID` taken
+  from `ansible-runner-env`: the randomised org and node names (Step 0
+  stamping) are identical, and the destroy finds what the first Job
+  created.
 - Gateway API (`ingress_type: gateway-api`) matrix legs are **not** added in
   this step; leave a comment stub for Step 2.
 - Reference full matrix design: MIGRATION-PLAN.md §5.3.4.

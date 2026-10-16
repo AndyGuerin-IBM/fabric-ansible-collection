@@ -777,3 +777,86 @@ The three loose ends:
 
 None of these needs a design change. Should I align the health path in Step 0 and the setup guide, and remove the cluster.local fallback from the prototype?
 >>>
+
+## Check & fix remaining review `Expose-none CI`
+
+Given the last changes, summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Expose-none CI`
+
+<<<
+Of the five "Expose-none CI" findings, three are fully resolved in MIGRATION-STEP-1.md. Two (the Job's ConfigMap mount and its RBAC) are covered but still need choices before the Job manifest can be written. No CI change is implemented yet.
+
+┌───────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────┐
+│                Review finding                 │                                         Status                                         │                      What remains                       │
+├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+│ Hardcoded values (fabricinfra, localho.st,    │ Handled. Assertions 3–6 find endpoints from the labelled per-endpoint Services, so no  │                                                         │
+│ org1peer…) where CI uses default,             │ node name is hardcoded and Org2 is covered. Assertions 1–2 use $NS, $CONSOLE_NAME and  │ Implementation only.                                    │
+│ <ip>.nip.io, random names; Org2 missing       │ $CONSOLE_URL from the CI environment. The domain comes from HLF_NETWORK_DOMAIN /       │                                                         │
+│                                               │ EXPOSED_DOMAIN.                                                                        │                                                         │
+├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+│ Rewrites applied after the playbook, though   │ Handled. In scenario C the rules are pattern-based and written by kind_with_nginx.sh   │ Implementation only. The CI must export the EXPOSE_*,   │
+│ build_network.sh needs them during its run    │ at cluster bootstrap. In scenario B there are no rewrites at all.                      │ HLF_NETWORK_DOMAIN and CLUSTER_DOMAIN variables before  │
+│                                               │                                                                                        │ the bootstrap (in the 1.4b and 1.5 todo lists).         │
+├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+│ Proposed Corefile drops the hosts block and   │ Handled. 1.4b keeps the existing Corefile and inserts the endpoint rules before the    │ Implementation, then the planned local check of the     │
+│ the nip.io rewrite, so the console no longer  │ wildcards.                                                                             │ CoreDNS ConfigMap after bootstrap.                      │
+│ resolves                                      │                                                                                        │                                                         │
+├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+│ Assertions test :7051/:7050/:7054 though      │ Handled. Assertions 3–5 go through :443 and check each Service's target port. Expected │                                                         │
+│ traffic uses :443; exit_code=$? never reached │  failures use rc=0; cmd || rc=$? under set -euo pipefail.                              │ Implementation only.                                    │
+│  under set -e                                 │                                                                                        │                                                         │
+├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+│ In-cluster Job: read-only ConfigMap mount,    │ Covered, but not settled. 1.5 lists the permissions needed (services, configmaps in    │                                                         │
+│ flattened tree, 1 MiB limit, no               │ kube-system, node CRs for neutralization). It also flags the ConfigMap limits and      │ Three gaps, below.                                      │
+│ ServiceAccount/RBAC                           │ offers two fixes: copy to an emptyDir, or build the tutorial into the runner image.    │                                                         │
+└───────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────┘
+
+The Job gaps:
+1. Choose how the tutorial reaches the Job. tutorial/ is 436 KB, flat and about 80 files, so a ConfigMap fits under 1 MiB today. But the playbooks write *.json and *.bin files into it, and fabcar@1.0.0.tgz is a binary. So copying to an emptyDir works but is fragile. Building the tutorial into the runner image is simpler, since the image is built in the same CI run anyway. The plan still lists both and still shows kubectl create configmap tutorial-files as a step.
+2. Write the ServiceAccount, Role and RoleBinding. 1.5 says which permissions are needed, but there's no manifest or todo item for them yet.
+3. The Job doesn't apply the domain and run-ID settings. It runs build_network.sh etc. directly, not run-tests.sh. So the yq patching of sub-task 1.4 (api_endpoint set to console_incluster_url, domains, expose_*, unique run names) doesn't happen inside the Job. Either run run-tests.sh inside the Job, or have the image build step patch common-vars.yml first.
+
+Two prerequisites from earlier steps also affect this leg:
+- Step 0's run-ID stamping: it's still missing, and run-tests.sh:42 still has the PATCH_BG_PID crash.
+- Check 5: the first scenario B run end to end, which this leg is supposed to provide.
+
+Should I settle the three Job gaps in sub-task 1.5?
+>>>
+
+---
+
+Settle the three Job gaps in sub-task 1.5
+
+<<<
+I settled the three Job gaps in sub-task 1.5 of MIGRATION-STEP-1.md, and tried the image and permissions on the local Kind cluster. A full network run inside the Job has not been done yet.
+
+┌──────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│           Gap            │                                                                                Decision                                                                                │
+├──────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ How the tutorial reaches │ It's copied into the runner image, in a writable /workspace. No ConfigMap, so no read-only mount, no flattened tree and no size limit. The playbooks can write their   │
+│  the Job                 │ JSON and binary files next to themselves.                                                                                                                              │
+├──────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ServiceAccount and       │ A dedicated ansible-runner ServiceAccount. A Role in default covers what the playbooks need: per-endpoint Services, patching node resources, reading Ingresses. A      │
+│ permissions              │ second Role in kube-system allows reading only the coredns ConfigMap. The full manifests are in the plan.                                                              │
+├──────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Variable injection       │ The Job runs run-tests.sh, so it gets the same patching as the runner leg. Its inputs come from a ConfigMap and a Secret created by the CI step. API_ENDPOINT is the   │
+│                          │ in-cluster HTTPS console URL.                                                                                                                                          │
+└──────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Teardown: the 1.6 assertions need the network alive, so the Job runs with KEEP_NETWORK=true. After the assertions, a second Job runs with RUN_TESTS_MODE=destroy. Both Jobs share one TEST_RUN_ID from the CI step, so the destroy finds the same randomised names. I added those three options to sub-task 1.4's todo list for run-tests.sh.
+
+Runner image: it builds on the collection image the repo already publishes (root Dockerfile), which has Ansible, the collection, kubernetes.core and peer/osnadmin/configtxlator. My first version failed because that image has no pip, jq or shasum. The fixed Dockerfile installs them; it's in the plan and in .url_management_new_checks/job/.
+
+Tried on 2026-10-16:
+- Images: both build.
+- Tools: the runner has yq with a working -yi, jq, shasum, peer 2.5.9 and ansible-playbook.
+- Writable workspace: /workspace can be written, also under a random user ID with group 0 (OpenShift-style).
+- Permissions: checked with kubectl auth can-i. The ServiceAccount can do exactly what it needs and is denied everything else: other kube-system ConfigMaps, creating peers or Deployments, reading Secrets.
+- Manifests: both pass kubectl apply --dry-run=server.
+- Probe pod: a pod with that ServiceAccount read the CoreDNS ConfigMap with no kubeconfig, and got HTTP 200 from the in-cluster console URL.
+
+Still open:
+- Full run: a complete run-tests.sh inside the Job (check 5). It's blocked on the Step 0 run-tests.sh fixes: the PATCH_BG_PID crash and the missing run-ID stamping.
+- Fabric versions: the image has peer 2.5.9 but the runner leg installs 2.4.7. That's already a Step 0 review item.
+
+The test resources are removed from the cluster. The images stay in the local Docker store and on the Kind node.
+>>>

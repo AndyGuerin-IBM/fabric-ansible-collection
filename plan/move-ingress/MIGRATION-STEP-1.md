@@ -1,7 +1,7 @@
 # Step 1 — Expose Options with NGINX Ingress Controller
 
 **Roadmap reference:** [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) — Step 1
-**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W1, W4, partial W5, partial W3, partial W7
+**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W1, W4 (decision only, sub-task 1.2), partial W5, partial W3, partial W7
 **Prerequisite:** [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) (Baseline CI & Test Runner Fixes)
 **Status:** `[ ] pending`
 
@@ -469,33 +469,37 @@ passed as `k8s_domain_facts_domain`:
 
 ---
 
-## Sub-task 1.2 — RBAC extension
+## Sub-task 1.2 — RBAC: no change to the operator's ClusterRole
 
-**Intent:** Add `gateway.networking.k8s.io` resource permissions to both cluster
-role templates. This is additive and harmless when Gateway API CRDs are not
-installed; applying it now avoids a diff in Step 2.
+**Intent:** Settle the RBAC question of workstream W4 for Step 1: **nothing is
+added** to the ClusterRole of the operator.
+
+The `gateway.networking.k8s.io` objects (`Gateway`, `HTTPRoute`, `TLSRoute`) are
+created by **Ansible tasks** in Step 2, with the permissions of the kubeconfig
+used by the control node. The operator never creates them: it always creates
+its own `Ingress` objects. Giving the operator rights on resources it never
+touches would only widen its privileges, in both
+`roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
+and `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`. It would also
+add a Gateway API manifest to Step 1, against acceptance criterion 9.
 
 **Expected outcomes:**
-- Both cluster role templates include the `gateway.networking.k8s.io` rule block.
-- Existing integration tests still pass (the new rules are never exercised on
-  the nginx path).
-- `yamllint` passes on both modified files.
+- Both cluster role templates are unchanged by Step 1.
+- Step 2 documents the rights the control node's kubeconfig needs on
+  `gateway.networking.k8s.io` (see MIGRATION-STEP-2.md).
 
 **Todo list:**
-- [ ] Add the `gateway.networking.k8s.io` rule block to
-  `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
-  after the existing `networking.k8s.io` block.
-- [ ] Add the same rule block to
-  `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`.
-- [ ] Verify the rule block covers `gateways`, `gatewayclasses`, `httproutes`,
-  `tlsroutes`, and `referencegrants` with the verbs listed in
-  MIGRATION-PLAN.md §5.4.
-- [ ] Run `yamllint` on both modified templates.
+- [ ] Do not edit the two cluster role templates.
+- [ ] Check in the operator source (spike, REVIEW §Recommended order) that it
+  never creates or watches Gateway API objects. If it does, reopen this
+  sub-task with the exact rules the operator needs.
 
 **Relevant context:**
-- Full rule block content: MIGRATION-PLAN.md §5.4
-- Files: `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
-  and `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`
+- MIGRATION-PLAN.md §5.4 and the "W4" mentions of MIGRATION-ROADMAP.md and
+  MIGRATION-STEP-2.md still describe the earlier rule block for the operator.
+  They are corrected together with Step 2.
+- Review: [REVIEW-MIGRATION-PLAN-STEP-1.md](./REVIEW-MIGRATION-PLAN-STEP-1.md),
+  "Documentation inconsistencies".
 
 ---
 
@@ -544,9 +548,15 @@ for the reasons above.
 - [ ] In `roles/fabric_console/tasks/k8s/create.yml` and in
   `tutorial/00-deploy-fabric-console.yml`, apply tasks 4 and 5 to the final
   print.
-- [ ] Check the `apiVersion` of `IBPConsole`: the roles read it as
-  `ibp.com/v1alpha2` (`k8s_info`) while the templates create `ibp.com/v1beta1`.
-  Use one version served by the CRD in both.
+- [ ] Use `ibp.com/v1beta1` for `IBPConsole` everywhere. The CRD
+  (`roles/hlfsupport_crds/templates/console-crd.yml.j2`) serves `v1beta1`,
+  `v1alpha2` and `v1alpha1`, and `v1beta1` is the storage version. The templates
+  and `tutorial/00-deploy-fabric-console.yml` already create `v1beta1`; change
+  the `k8s_info` and delete tasks that read `ibp.com/v1alpha2` in
+  `roles/fabric_console/tasks/{k8s,openshift}/{create,delete}.yml` and
+  `roles/hlfsupport_console/tasks/{k8s,openshift}/{create,delete}.yml`.
+  `fabric_console/tasks/k8s/delete.yml` also picks `v1alpha1` before 2.5.0:
+  keep that branch.
 - [ ] Do **not** add any Gateway API (`ingress_type == 'gateway-api'`) branches
   yet — those belong in Step 2.
 - [ ] Run `ansible-lint` on the modified files.

@@ -554,3 +554,13 @@ fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md sub-tasks 1.3 and 1.6 by 
 As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design)
 
 fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md expose non ci part
+
+
+## Fix review step 1 Documentation inconsistencies
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Documentation inconsistencies
+
+RBAC routes are created by Ansible tasks, not by the operator extending the operator cluster role is not necessary
+also fix 1.3 unconsistent block size
+
+fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md

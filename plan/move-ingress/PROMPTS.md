@@ -546,4 +546,160 @@ It needs to be double checks as best effort.
 If it's possible to get the cluster domain and there is a gap an error should be raised.
 If it's not possible to get the cluster domain then a warning is displayed telling we trust user cluster domain.
 
+## Fix remaining `Variables and facts issues`
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design), we need to improve the variable scopes and definitions.
+
+```
+**Variable scope:** the defaults of `fabric_operator_crds` are not visible
+  from `fabric_console`, `endorsing_organization` or `ordering_organization`
+  (separate playbooks). `include_tasks: set_facts.yml` called from
+  `hlfsupport_console` looks for the file in its own role.
+  `ingress_domain_is_cluster_local` is used in the organization roles without
+  ever being defined there.
+  → Defaults in each role, or a small shared role called via `include_role`.
+```
+
+We also need to harden domain definitions and double check the way it is used between Fabric Ansible Collection and Fabric Operator.
+
+First explain how the componant URLs are built from the Fabric Ansible Collection to the Fabric Operator. Write a comprehensive summary in @plan/move-ingress/URL-MANAGEMENT.md
+
+---
+
+At the current stage the ingress_domain is equal to the console_domain and that definition is propagated to the underlying HLF component FQDN. However in that first step we need to decouple a bit these things.
+
+- The ingress_domain should be renamed exposed_domain to have a naming compliant with our future move
+- we should have an additional hlf_network_domain var to reflect what will be propagated to the underlying HLF component FQDN.
+- `ingress_domain_is_cluster_local` should be renamed `hlf_network_domain_is_cluster_local` and should be true if hlf_network_domain=cluster_domain. In such case, no CoreDNS rewrite rules are needed else CoreDNS rewrite rules should be defined to target appropriate kuberneted services.
+- the console URL and so its TLS SANs should be built based on the exposed_domain definition even though we do not request to expose the console (expose_console=false).
+
+Rename @plan/move-ingress/URL-MANAGEMENT.md to @plan/move-ingress/EXISTING-URL-MANAGEMENT.md
+
+Provide a proposal to improve current domain & URL management so that :
+- there is clear decoupling in the definitions
+- there is minimal change in Fabric Ansible Collection and no changes in Fabric Operator
+- solution handle the step 1 case target where:
+  - we do not expose anything in first deployment
+  - HLF domain is cluster internal
+  - we can subsequently manually configure an ingress or a K8S Gateway API route to the console with appropriate console URL & TLS working
+- solution doesnt introduce regression with the current default architecture (all exposed through ingress)
+
+Write a comprehensive and illustrated proposition in @plan/move-ingress/NEW-URL-MANAGEMENT.md.
+
+---
+
+About following decision:
+
+```
+> **Decision D1: definition of "cluster local".** The request was
+> `hlf_network_domain_is_cluster_local = (hlf_network_domain == cluster_domain)`.
+> That does not give "no CoreDNS rewrite needed". With
+> `hlf_network_domain: cluster.local`, the operator builds
+> `default-org1peer-peer.cluster.local`, but Kubernetes only serves
+> `<service>.<namespace>.svc.cluster.local`. That name would still need a
+> rewrite. The only value whose FQDNs are **already** Kubernetes Service
+> names is `<namespace>.svc.<cluster_domain>`:
+>
+> ```
+> default-org1peer-peer . default.svc.cluster.local
+> └──── Service name ───┘ └ namespace ┘
+> ```
+>
+> This proposal therefore defines the fact against
+> `<namespace>.svc.<cluster_domain>`. Any other value inside
+> `cluster_domain` (`cluster.local`, `svc.cluster.local`,
+> `other-ns.svc.cluster.local`) is rejected at role entry (sub-task 1.1b).
+> **To confirm.**
+````
+
+True that previous definition is not well defined. `hlf_network_domain` should be defined so that we have operator building component URLs like <service>.<namespace>.svc.<hlf_network_domain>. If (hlf_network_domain == cluster_domain) then hlf_network_domain_is_cluster_local=true and in that case no CoreDNS rewrite rules should be needed.
+
+Rename @plan/move-ingress/EXISTING-URL-MANAGEMENT.md to @plan/move-ingress/URL-MANAGEMENT-EXISTING.md
+Rename @plan/move-ingress/NEW-URL-MANAGEMENT.md to @plan/move-ingress/URL-MANAGEMENT-NEW.md
+Update @plan/move-ingress/URL-MANAGEMENT-NEW.md according last decision.
+
+--
+
+`hlf_network_domain` should be defined so that we have operator building component URLs like <service>.<namespace>.svc.<hlf_network_domain> if (hlf_network_domain == cluster_domain) else we keep previous way of building URLs.
+
+---
+
+Regarding `| D4 | Node Ingress neutralization (§5.4) | proposed: opt-in, after check 3 |`, can you provide a better explanation of the proposition with example ?
+
+---
+
+Apply D2 to D5 propositions in @plan/move-ingress/URL-MANAGEMENT-NEW.md.
+
+Then summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Variables and facts`
+
+---
+
+Perform checks before coding (§9 in @plan/move-ingress/URL-MANAGEMENT-NEW.md)
+
+---
+
+Record §9 checks results in @plan/move-ingress/URL-MANAGEMENT-NEW.md. Move content of /tmp/fac-checks into @plan/move-ingress/.url_management_new_checks/.
+clean up the test resources.
+
+---
+
+Summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Variables and facts`
+
+---
+
+All three "Variables and facts" findings now have a design, and the domain mechanics behind it were confirmed on the local Kind cluster (checks 1, 2, 3, 4, 6 and 7 passed). The main remaining work is
+rewriting MIGRATION-STEP-1.md, which still describes the old design.
+
+Review finding: cluster_domain discovery (kubectl exec … awk always fails)
+Status now: Fixed in the plan. Sub-task 1.1 reads the kube-system/coredns ConfigMap, checks a value you set against it, and warns or fails when it can't read it. The parsing was tested on sample
+Corefiles only.
+What remains: Move this logic into the shared network_domains role. Decide the -e question: a value passed with -e can't be overwritten by set_fact. Run it once against the live Kind cluster's
+ConfigMap.
+────────────────────────────────────────
+Review finding: Variable scope (defaults invisible across playbooks; include_tasks from hlfsupport_console looks in its own role; ingress_domain_is_cluster_local undefined in the organization roles)
+Status now: Designed in URL-MANAGEMENT-NEW.md §6: one network_domains role, values shared through common-vars.yml, and the V5 check on returned URLs (check 6 confirmed the rule).
+What remains: MIGRATION-STEP-1.md sub-tasks 1.1, 1.1b and 1.3b still use set_facts.yml in fabric_operator_crds, include_tasks, and the old ingress_domain* names. The fabric_console role and
+tutorial/00-deploy-fabric-console.yml (what CI runs) must call the new role. Per finding F1, the console role must set spec.deployer.domain when the console is created, and restart the console or
+refuse if it changes later.
+────────────────────────────────────────
+Review finding: Cluster-local domain is not a Service FQDN
+Status now: Resolved by D1 and confirmed by check 1. With hlf_network_domain == cluster_domain, the CA's URLs were real Service names: resolved with no CoreDNS change, strict TLS passed.
+What remains: Rewrite 1.1b with validation rules V2 and V3, apply the CoreDNS decision tree in 1.4b, and update acceptance criterion 7. Check 5 (scenario B end to end) is blocked until the in-cluster
+runner of sub-task 1.5 exists.
+
+Three related items fall outside these findings but affect the same tasks:
+- F3: a CA created as Check1 CA was stored as Check1, so a later call with the original name didn't find it. The modules find components by display name, so this needs explaining before sub-task 1.3b.
+- Assumption S1 (from the review's organization-roles section): node resource names should come from the URLs the console returns, not be re-derived from the display name.
+- F2: the console certificate doesn't cover its in-cluster name. Note it in the docs, or add that name to the certificate via console_tls_secret.
+
+The next step is to apply URL-MANAGEMENT-NEW.md §7.3 to MIGRATION-STEP-1.md, which covers most of the remaining items. Execute that next step.
+
+---
+
+Summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Variables and facts`
+
+Review finding: cluster_domain discovery (kubectl exec … awk always fails)
+Plan: Sub-task 1.1: read the kube-system/coredns ConfigMap, check a value you set against it, warn or fail when it can't be read
+Verified: Prototype role passed 13/13 cases against the live Kind ConfigMap; the -e question is solved (computed values have their own names)
+Remaining: Test the unreadable-ConfigMap case live, with a ServiceAccount lacking get configmaps (in the 1.1b todo list). It was only tested earlier on sample data.
+────────────────────────────────────────
+Review finding: Variable scope (defaults invisible across playbooks, include_tasks looking in the wrong role, undefined ingress_domain_is_cluster_local)
+Plan: Sub-task 1.1: shared network_domains role, included with public: true by both console roles, both organization roles and tutorial/00-deploy-fabric-console.yml. Values come from common-vars.yml;
+V5 checks the returned URLs.
+Verified: The role was only tested standalone, not yet included from the real roles
+Remaining: Implementation: create roles/network_domains/, add the includes, remove the unused ingress_domain default, move the tests into the collection. Then run run-tests.sh on the default setup to
+confirm no regression.
+────────────────────────────────────────
+Review finding: Cluster-local domain is not a Service FQDN
+Plan: Decision D1, applied in 1.1, 1.3a, 1.3b and 1.4b
+Verified: Confirmed on a CA: Service FQDNs, no CoreDNS change, strict TLS passed
+Remaining: Check 5: run scenario B end to end (CA, peers, orderers, channel join). It needs the in-cluster runner of sub-task 1.5; peers and orderers are confirmed only in the source code so far.
+
+Three adjacent items affect the same tasks:
+- F3: a CA created as Check1 CA was stored as Check1. Reproduce it with a clean create, because the modules find components by display name.
+- S1: the plan now checks node names against the returned URLs. Adding an optional id parameter to the modules would make names deterministic, but only if the check fails in practice.
+- Check 3 on a peer: needed before node Ingress neutralization can become the default.
+
+The natural next step is implementing sub-task 1.1 for real, since everything else builds on it. Should I start?
+
 

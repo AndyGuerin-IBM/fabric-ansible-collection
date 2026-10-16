@@ -1,7 +1,7 @@
 # Step 2 — First Kubernetes Gateway API Implementation: Console HTTPRoute
 
 **Roadmap reference:** [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) — Step 2  
-**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W2, partial W3, W4 (already done in Step 1), W5 (Gateway resource), §5.6.1 of W6, partial W7  
+**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W2, partial W3, W4 (sub-task 2.0, moved from Step 1), W5 (Gateway resource), §5.6.1 of W6, partial W7  
 **Prerequisite:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) fully completed  
 **Gateway API version target:** Kubernetes Gateway API **v1.3** (minimum; `HTTPRoute` is GA, `Gateway` `Programmed` condition is stable)  
 **Status:** `[ ] pending`
@@ -19,6 +19,57 @@ path in this step.
 
 The NGINX ingress controller path is unchanged and continues to pass all tests
 from Step 1. The two paths are validated in parallel in the CI matrix.
+
+---
+
+## Sub-task 2.0 — RBAC extension for Gateway API resources (moved from Step 1)
+
+**Moved from `MIGRATION-STEP-1.md` sub-task 1.2 on 2026-10-16.** Step 1 adds
+no Gateway API object, so it belongs here, with the first Gateway API
+resources.
+
+**Intent:** Grant the permissions the Gateway API path needs, **to the
+identity that creates the objects**. In this design the `Gateway` (sub-task
+2.3) and the routes (sub-task 2.4, Step 3) are created by Ansible tasks, not
+by the operator.
+
+**Expected outcomes:**
+- The identity that creates the `Gateway` and routes holds the
+  `gateway.networking.k8s.io` rules, and only it.
+- Existing integration tests still pass (the new rules are never exercised on
+  the nginx path).
+- `yamllint` passes on both modified files.
+
+**Todo list:**
+- [ ] Confirm which identity creates the Gateway API objects, and whether the
+  operator reads them (review note below).
+- [ ] If the operator needs them: add the `gateway.networking.k8s.io` rule block to
+  `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
+  after the existing `networking.k8s.io` block.
+- [ ] Add the same rule block to
+  `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`.
+- [ ] Verify the rule block covers `gateways`, `gatewayclasses`, `httproutes`,
+  `tlsroutes`, and `referencegrants` with the verbs listed in
+  MIGRATION-PLAN.md §5.4.
+- [ ] Otherwise: add the rules to the CI runner's Role
+  (`.github/k8s/ansible-runner-rbac.yml`) and document them for users.
+- [ ] Run `yamllint` on all modified manifests and templates.
+
+**Relevant context:**
+- Full rule block content: MIGRATION-PLAN.md §5.4
+- Files: `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
+  and `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`
+- Review note (REVIEW-MIGRATION-PLAN-STEP-1.md, documentation
+  inconsistencies): routes are created by Ansible tasks, not by the operator,
+  so extending the **operator's** ClusterRole is not needed for them.
+  **Decide first:** does `fabric-operator` read any Gateway API object? Its
+  source (`main` @ `6ea612b`) only manages `networking.k8s.io` Ingresses and
+  OpenShift Routes. If it doesn't, drop the operator ClusterRole change and
+  grant the rules to the playbook identity instead: the user's kubeconfig,
+  or the in-cluster CI Job's ServiceAccount (`MIGRATION-STEP-1.md` sub-task
+  1.5, `.github/k8s/ansible-runner-rbac.yml`).
+- `hlfsupport_console`'s ClusterRole is the console's own role; same
+  question: the console does not create Gateway API objects either.
 
 ---
 

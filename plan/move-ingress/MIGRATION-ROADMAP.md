@@ -33,19 +33,22 @@ provide explicit tutorials for the extreme opposite scenario where nothing is
 exposed through the NGINX ingress controller (`expose_console: false`,
 `expose_ca: false`, `expose_peer: false`, `expose_orderer: false`).
 
-**Workstreams from MIGRATION-PLAN.md:** W1 (variable abstraction), W4 (RBAC
-extension), partial W5 (console wait logic for `expose_console` flag), partial
+**Workstreams from MIGRATION-PLAN.md:** W1 (variable abstraction), partial W5 (console wait logic for `expose_console` flag), partial
 W3 (CI test matrix stabilisation and `run-tests.sh` bug-fixes), partial W7
 (documentation for new variables and no-expose tutorials).
 
 **Key outcomes:**
-- All `expose_*` and `ingress_type` defaults live in
-  `roles/fabric_operator_crds/defaults/main.yml`.
+- All `expose_*`, `ingress_type` and domain defaults (`exposed_domain`,
+  `hlf_network_domain`, `cluster_domain`) live in the shared internal role
+  `roles/network_domains`, included by every role
+  ([`URL-MANAGEMENT-NEW.md`](./URL-MANAGEMENT-NEW.md)).
 - Console wait logic in `hlfsupport_console` and `fabric_console` respects
-  `expose_console: false` (in-cluster URL health-check + notice message).
-- Both `nginx` expose-all and `nginx` expose-none scenarios are validated by
-  the CI matrix and documented in tutorials.
-- `run-tests.sh` injects `ingress_type` and all `expose_*` variables into `common-vars.yml` for all test runs.
+  `expose_console: false` (Deployment readiness + notice with the console URL,
+  which stays built from `exposed_domain`).
+- The nginx expose-all, expose-none and expose-none-internal (cluster-local
+  HLF domain, no CoreDNS rewrite) scenarios are validated by the CI matrix and
+  documented in tutorials.
+- `run-tests.sh` injects `ingress_type`, all `expose_*` and the domain variables into `common-vars.yml` for all test runs.
 
 **See:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md)
 
@@ -62,7 +65,8 @@ GA and supports the `Programmed` condition on `Gateway`).
 
 **Workstreams from MIGRATION-PLAN.md:** W2 (CI bootstrap script for Envoy
 Gateway), partial W3 (CI matrix with `gateway-api` leg for console only), W4
-(RBAC extension for gateway resources — additive and harmless on the nginx leg),
+(RBAC for gateway resources, moved from Step 1 — granted to the identity that
+creates them),
 W5 (Gateway resource creation in `fabric_operator_crds`, full console wait logic),
 §5.6.1 of W6 (console `HTTPRoute` template and task), partial W7 (console Gateway
 API tutorial and shared gateway install tutorial).

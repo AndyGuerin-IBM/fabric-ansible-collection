@@ -1,7 +1,7 @@
 # Step 1 — Expose Options with NGINX Ingress Controller
 
 **Roadmap reference:** [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) — Step 1
-**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W1, W4, partial W5, partial W3, partial W7
+**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W1, partial W5, partial W3, partial W7 (W4 moved to Step 2)
 **Prerequisite:** [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) (Baseline CI & Test Runner Fixes)
 **Status:** `[ ] pending`
 
@@ -207,6 +207,13 @@ before any task that branches on `expose_*` or a domain fact):
   no-op (found while testing). The role never uses that form.
 - Port variables `ingress_*_port` are Gateway API listener ports for Step 2,
   **not** the native target ports of sub-task 1.3b.
+- The identity that runs the playbooks needs `get` on
+  `kube-system/configmaps/coredns` for the `cluster_domain` lookup. Without
+  it, `cluster_domain` must be set by hand. The in-cluster CI Job gets it
+  through its own Role (sub-task 1.5).
+- The former sub-task 1.2 (`gateway.networking.k8s.io` RBAC rules) moved to
+  [`MIGRATION-STEP-2.md`](./MIGRATION-STEP-2.md) sub-task 2.0 on 2026-10-16:
+  Step 1 introduces no Gateway API object (acceptance criterion 9).
 
 ---
 
@@ -248,44 +255,6 @@ adds the tests and their CI hook.
 **Relevant context:**
 - `expose_peer_operations`, `expose_orderer_operations` and `expose_grpcweb`
   are sub-flags of `expose_peer` / `expose_orderer` and are not checked by V3.
-
----
-
-## Sub-task 1.2 — RBAC extension
-
-**Intent:** Add `gateway.networking.k8s.io` resource permissions to both cluster
-role templates. This is additive and harmless when Gateway API CRDs are not
-installed; applying it now avoids a diff in Step 2.
-
-**Expected outcomes:**
-- Both cluster role templates include the `gateway.networking.k8s.io` rule block.
-- Existing integration tests still pass (the new rules are never exercised on
-  the nginx path).
-- `yamllint` passes on both modified files.
-
-**Todo list:**
-- [ ] Add the `gateway.networking.k8s.io` rule block to
-  `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
-  after the existing `networking.k8s.io` block.
-- [ ] Add the same rule block to
-  `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`.
-- [ ] Verify the rule block covers `gateways`, `gatewayclasses`, `httproutes`,
-  `tlsroutes`, and `referencegrants` with the verbs listed in
-  MIGRATION-PLAN.md §5.4.
-- [ ] Run `yamllint` on both modified templates.
-
-**Relevant context:**
-- Full rule block content: MIGRATION-PLAN.md §5.4
-- Files: `roles/fabric_operator_crds/templates/k8s/rbac/hlf-operator-clusterrole.yaml`
-  and `roles/hlfsupport_console/templates/k8s/cluster_role.yml.j2`
-- Review note (REVIEW-MIGRATION-PLAN-STEP-1.md, documentation
-  inconsistencies): routes are created by Ansible tasks, not by the operator,
-  so extending the **operator's** ClusterRole is not needed for them. Keep
-  this sub-task only if Step 2 confirms the operator reads Gateway API
-  objects; otherwise drop it.
-- The identity that runs the playbooks needs `get` on
-  `kube-system/configmaps/coredns` for the `cluster_domain` lookup
-  (sub-task 1.1). Without it, `cluster_domain` must be set by hand.
 
 ---
 
@@ -409,11 +378,35 @@ restarts. Hence:
   same.
 - [ ] `tutorial/00-deploy-fabric-console.yml`: same, on the inline CR
   (`hlf_console_domain` stays the input of `exposed_domain`).
+- [ ] **Fix the `IBPConsole` `apiVersion` in every read and delete** (review,
+  "Documentation inconsistencies" — it is a bug, not only a wording issue).
+  The operator's CRDs serve **only `ibp.com/v1beta1`** (checked 2026-10-16 on
+  KIND: `ibpconsoles.ibp.com` and `ibppeers.ibp.com` list a single version,
+  `v1beta1`). Querying the running console with `kubernetes.core.k8s_info`:
+  `api_version: ibp.com/v1alpha2` returns **0 resources and no error**
+  (`api_found: false`); `ibp.com/v1beta1` finds it. So today "Determine if
+  console exists" always concludes there is no console. Change to
+  `ibp.com/v1beta1`:
+  - `roles/fabric_console/tasks/k8s/create.yml:20`,
+    `roles/fabric_console/tasks/openshift/create.yml:8`;
+  - `roles/hlfsupport_console/tasks/k8s/create.yml:89`,
+    `roles/hlfsupport_console/tasks/openshift/create.yml:85`;
+  - `roles/hlfsupport_console/tasks/{k8s,openshift}/delete.yml:28`;
+  - `roles/fabric_console/tasks/{k8s,openshift}/delete.yml:28`, which pick
+    `v1alpha2` / `v1alpha1` from `product_version` and never `v1beta1`.
+  The templates and `tutorial/00-{deploy,delete}-fabric-console.yml` already
+  use `v1beta1`.
 - [ ] Add the "domain changed on an existing console" detection and restart.
+  It reads the live `IBPConsole`, so it depends on the `apiVersion` fix above.
 - [ ] Render the templates for scenarios A and B with `ansible-playbook
   --check --diff` and compare with the examples above.
 
 **Relevant context:**
+- With the wrong `apiVersion`, `hlfsupport_console` also never sees an
+  existing console in its upgrade path
+  (`roles/hlfsupport_console/tasks/k8s/create.yml:113,122`: delete and
+  recreate on `operator_upgrade`), so the fix changes upgrade behaviour too.
+  Test an upgrade run (console already present) after the fix.
 - The console's own Service is named after the CR (`hlf-console`, port
   `optools` 3000): that is `console_incluster_url`.
 - The console certificate does not name `console_incluster_url`'s host

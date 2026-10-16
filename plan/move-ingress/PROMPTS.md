@@ -860,3 +860,49 @@ Still open:
 
 The test resources are removed from the cluster. The images stay in the local Docker store and on the Kind node.
 >>>
+
+## Check & fix remaining review `Documentation inconsistencies`
+
+Given the last changes, summarize what remains to be handled to cover STEP 1 Review `Documentation inconsistencies`
+
+<<<
+Of the three "Documentation inconsistencies", one is resolved, one is gone because the text it referred to was rewritten, and one is still open. That last one is worse than the review described: it's a real bug, not a wording issue.
+
+┌─────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────┐
+│             Review item             │                                 Status                                 │                                    What remains                                    │
+├─────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ RBAC (sub-task 1.2): the operator   │ Noted, not decided. 1.2 now carries the review note and says "keep     │ One decision: drop 1.2 from Step 1 or move it to Step 2. Since Step 1 adds no      │
+│ doesn't create the routes, so       │ only if Step 2 confirms the operator reads Gateway API objects;        │ Gateway API objects, dropping it is consistent with acceptance criterion 9 ("no    │
+│ extending its ClusterRole is        │ otherwise drop it". It's still listed as a Step 1 sub-task with its    │ Gateway API … introduced"). Its only Step 1 content, the CoreDNS-read permission,  │
+│ unnecessary                         │ todo items.                                                            │ is already covered by the 1.5 RBAC.                                                │
+├─────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ Sub-task 1.3 says "five-task block" │ Gone. 1.3 was rewritten (guard the existing Ingress tasks, add the     │                                                                                    │
+│  but lists six                      │ Deployment-readiness and notice tasks) and no longer refers to that    │ Nothing.                                                                           │
+│                                     │ block.                                                                 │                                                                                    │
+├─────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ IBPConsole read as v1alpha2 but     │ Open, and it's a functional bug.                                       │ Explained below.                                                                   │
+│ created as v1beta1                  │                                                                        │                                                                                    │
+└─────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────┘
+
+Why the apiVersion mismatch matters: on the live Kind cluster, the operator's IBPConsole CRD serves only v1beta1, and the node CRDs likewise. I queried the running console with kubernetes.core.k8s_info both ways:
+- api_version: ibp.com/v1alpha2 returns 0 resources, api_found=False, and no error;
+- api_version: ibp.com/v1beta1 finds the console.
+
+So Determine if console exists (roles/fabric_console/tasks/k8s/create.yml:20, roles/hlfsupport_console/tasks/k8s/create.yml:89, and the OpenShift variants) always concludes there is no console. It fails silently.
+
+That matters for Step 1: sub-task 1.3a's "domain changed on an existing console → restart" relies on reading the live console, and would never trigger. Also, hlfsupport_console uses that result to decide whether to delete and recreate the console on upgrade (create.yml:113,122).
+
+The delete.yml files pick v1alpha2 or v1alpha1 by product_version and never v1beta1. The deletes themselves still work, because the tutorial delete playbook uses v1beta1.
+
+Fix for Step 1:
+- Use ibp.com/v1beta1 in every IBPConsole read and delete in both console roles, matching the templates and the tutorial.
+- Add a todo item in 1.3a.
+- Correct the review entry: it's a bug, not a documentation issue.
+
+Should I record the apiVersion fix in 1.3a and drop sub-task 1.2?
+>>>
+
+---
+
+Record the apiVersion fix in 1.3a and move sub-task 1.2 to step 2
+

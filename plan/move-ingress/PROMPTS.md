@@ -906,3 +906,119 @@ Should I record the apiVersion fix in 1.3a and drop sub-task 1.2?
 
 Record the apiVersion fix in 1.3a and move sub-task 1.2 to step 2
 
+## Double check plan STEP0 and STEP1 given the last changes
+
+Given the last changes, double check review of STEP0 and STEP1 and summarize what remains to be handled
+
+<<<
+I've now cross-checked every item in both reviews. Step 1's plan covers all its findings; four small text fixes are left. Step 0 is still not done, although it's marked complete, and its crash bug also blocks Step 1's in-cluster test run.
+
+Step 0 — not complete (MIGRATION-STEP-0.md says [x] complete)
+
+┌──────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────┐
+│         Review item          │                                             Current state                                             │                           To do                            │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ B4: run-tests.sh crash       │ The review says it's fixed, but run-tests.sh:42 still has wait "${PATCH_BG_PID}" || true. Under set   │ Delete line 42, then do a full run (exit=0).               │
+│                              │ -u the script stops after build_network.sh, so join and deploy never run.                             │                                                            │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ TEST_RUN_ID stamping         │ Not in run-tests.sh.                                                                                  │ Implement it, taking an existing TEST_RUN_ID from the      │
+│                              │                                                                                                       │ environment (needed by Step 1.5's two Jobs).               │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ Python version               │ CI uses 3.9; the setup guide says "exactly 3.10".                                                     │ Align them.                                                │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ Fabric version               │ CI installs 2.4.7; the setup guide downloads 2.5.15 under a "2.4.7" heading; the runner image has     │ Pick one version for all three.                            │
+│                              │ 2.5.9.                                                                                                │                                                            │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ CI trigger                   │ fvtest.yml runs only on workflow_dispatch. Step 1 expects it on every push.                           │ Add push / pull_request, or reword Step 1.                 │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ Sub-task 0.1 vs              │ 0.1 describes an inline playbook using fabric_console; CI actually runs                               │ Update 0.1 to match.                                       │
+│ implementation               │ tutorial/00-deploy-fabric-console.yml.                                                                │                                                            │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ Setup guide prerequisites    │ It doesn't mention reinstalling the collection with -f or setting ANSIBLE_PYTHON_INTERPRETER, and it  │ Update MIGRATION-PREREQ-LDE.md §1–§3.                      │
+│                              │ still suggests brew install yq, which installs the wrong yq.                                          │                                                            │
+├──────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ Health path (from the Step 1 │ Step 0 and the setup guide use /health, which returns the UI's HTML page without credentials and      │ Use /ak/api/v3/health with credentials.                    │
+│  Console review)             │ proves nothing about the API.                                                                         │                                                            │
+└──────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────┘
+
+Step 1 — plan complete; four text fixes
+
+All findings are covered in MIGRATION-STEP-1.md:
+- B2 (operator Ingresses): combines review options (a) and (b). The operator's Ingresses stay, the console Ingress is made unserved, and node Ingresses can be neutralized as an opt-in (1.3c, checked on a CA).
+- B3 (one port 443 can't serve several hostnames): solved by one Service per endpoint (1.3b).
+- Variables and facts: the network_domains role (1.1); its prototype passes 13/13 test cases.
+- Organization roles: the guarded Kubernetes dependency and the node names (1.3b). The Step 3 items moved to the Step 3 review.
+- Console: sub-tasks 1.3 and 1.3a, including the apiVersion bug.
+- Expose-none CI: sub-tasks 1.4b, 1.5 and 1.6; the Job image and permissions were tried on Kind.
+- Documentation inconsistencies: RBAC moved to Step 2; the "five-task" text is gone; the apiVersion fix is in 1.3a.
+
+The four text fixes:
+1. F3 is still listed as open. MIGRATION-STEP-1.md:512 and the :762 todo item, plus URL-MANAGEMENT-NEW.md §9.1, still call it an unexplained console behaviour. It was my command-line quoting: -e name="Check1 CA" is cut at the space. Close it in all three places.
+2. The prototype still hardcodes cluster.local for console_incluster_url when the cluster domain isn't resolved (network_domains/tasks/main.yml:124). It should be empty in that case.
+3. The Step 1 review's "Recommended order of action" is out of date. All three actions are done: B2 decided, operator check run on 2026-10-16, Step 1 rewritten around per-endpoint Services. Mark them done, as the Step 0 review does for its item.
+4. The Step 1 review entries carry no status. Unlike the Step 0 review's B4 "fixed" marker, nothing shows which findings are handled. Add a status line per section pointing to the covering sub-task.
+
+Blocked until implementation
+
+These only happen once the plan is coded:
+- Check 5: scenario B end to end. It needs the Step 1.5 Job, which runs run-tests.sh, so it's blocked on the Step 0 crash fix.
+- Check 3 on a peer: needed before node Ingress neutralization can be on by default.
+- Upgrade run after the apiVersion fix: hlfsupport_console will then see the existing console in its upgrade path.
+- Multi-peer name check: confirm org1peer1, org1peer2… on a real run.
+
+Step 0 is the critical path: B4 alone blocks both the baseline and Step 1's end-to-end check. Should I fix run-tests.sh and the Step 0 docs first, or do the four Step 1 text fixes first?
+>>>
+
+---
+
+Do the four Step 1 text fixes first
+
+---
+
+Given the last changes, double check review of STEP0 and STEP1 and summarize what remains to be handled
+
+<<<
+Step 1's review is fully covered by the plan, and the four text fixes are in place. Step 0 is unchanged: none of its items have been handled. One inconsistency remains between the two summaries of B4.
+
+Step 1: plan complete
+
+Re-checked against the current files:
+- Status lines: all 8 sections of the Step 1 review carry one, each pointing to the covering sub-task.
+- F3: closed everywhere; no "open" mention is left outside the PROMPTS.md log.
+- Prototype: no cluster.local fallback remains; 13/13 tests pass.
+- No stale design left in MIGRATION-STEP-1.md:
+  - the old design (set_facts.yml, ingress_domain*) appears only where the text explains what was replaced;
+  - v1alpha2 appears only in the description of the apiVersion bug;
+  - there is no fabricinfra, COREDNS_HOOK or sub-task 1.2 any more.
+- Overview review: REVIEW-MIGRATION-PLAN.md shows B2 decided and B3 planned.
+
+What's left for Step 1 is the implementation, plus four checks that need it: scenario B end to end (check 5), check 3 on a peer, an upgrade run after the apiVersion fix, and multi-peer names.
+
+Step 0: nothing handled yet
+
+┌───────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│         Item          │                                                                          State                                                                           │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ B4 PATCH_BG_PID crash │ Still at run-tests.sh:42. Without it, join and deploy never run.                                                                                         │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ TEST_RUN_ID stamping  │ Not implemented. Step 1.5 also needs it to accept an ID from the environment.                                                                            │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Status                │ MIGRATION-STEP-0.md still says [x] complete.                                                                                                             │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Python version        │ CI uses 3.9; MIGRATION-PREREQ-LDE.md says "exactly 3.10".                                                                                                │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Fabric version        │ CI 2.4.7; the setup guide downloads 2.5.15 under a "2.4.7" heading; the runner image has 2.5.9.                                                          │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ CI trigger            │ workflow_dispatch only. No Step 1 file says "every push" any more, so this is now a choice, not a contradiction.                                         │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Sub-task 0.1          │ Still describes an inline playbook with fabric_console; CI runs tutorial/00-deploy-fabric-console.yml.                                                   │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Setup guide           │ Still brew install yq (the wrong yq); no ANSIBLE_PYTHON_INTERPRETER. It does show collection install … -f, but doesn't explain why reinstalling matters. │
+├───────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Health path           │ /health in MIGRATION-STEP-0.md:123 and MIGRATION-PREREQ-LDE.md:195,198; it returns the UI page, not API health.                                          │
+└───────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+The inconsistency: the overview now says B4 is Open, but REVIEW-MIGRATION-PLAN-STEP-0.md still says "fixed" and "the line was removed". That's wrong: the line is in the file. Either the fix was never saved or it was reverted. The Step 0 review should read "Open" until the line is gone and a full run passes.
+
+Fixing run-tests.sh (B4 and the run-ID stamping) unblocks both the Step 0 baseline and Step 1's end-to-end check. The doc items can follow in the same pass. Should I start?
+>>>

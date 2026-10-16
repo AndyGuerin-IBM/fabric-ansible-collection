@@ -120,8 +120,11 @@
   ansible.builtin.set_fact:
     console_url: >-
       https://{{ network_domains_namespace }}-{{ network_domains_console_name }}-console.{{ network_domains_exposed_domain }}
+    # Empty when the cluster domain was not resolved (everything exposed): nothing uses it then.
     console_incluster_url: >-
-      https://{{ network_domains_console_name }}.{{ network_domains_namespace }}.svc.{{ network_domains_cluster_domain or 'cluster.local' }}:3000
+      {{ ('https://' ~ network_domains_console_name ~ '.' ~ network_domains_namespace
+          ~ '.svc.' ~ network_domains_cluster_domain ~ ':3000')
+         if network_domains_cluster_domain != '' else '' }}
   when: network_domains_console_name | length > 0
 
 - name: Check the console hostname label length (V4)

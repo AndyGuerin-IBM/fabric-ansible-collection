@@ -53,9 +53,9 @@ the architecture — see the per-step reviews linked above.
 | # | Issue | Step | Nature | Effort | Status | Detail |
 |---|---|---|---|---|---|---|
 | B1 | Native ports cannot work without changing the operator | 3 (and 2) | Design | High | Open | [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md#b1---native-ports-7051--7050--7054-cannot-work) |
-| B2 | "Nothing exposed" is impossible on nginx as specified | 1 | Decision | — | Open | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b2---nothing-exposed-through-nginx-is-impossible-as-specified) |
-| B3 | A Service port 443 cannot serve several FQDNs | 1 | Design | Medium | Open | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b3---a-service-port-443-cannot-serve-several-fqdns) |
-| B4 | `run-tests.sh` crashes (`PATCH_BG_PID`) | 0 | Bug | Trivial | **Fixed** — full test run to be confirmed | [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md#b4--run-testssh-crashes--fixed) |
+| B2 | "Nothing exposed" is impossible on nginx as specified | 1 | Decision | — | **Decided** 2026-10-16 — planned, not implemented | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b2---nothing-exposed-through-nginx-is-impossible-as-specified) |
+| B3 | A Service port 443 cannot serve several FQDNs | 1 | Design | Medium | **Planned** 2026-10-16 (per-endpoint Services) — not implemented | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b3---a-service-port-443-cannot-serve-several-fqdns) |
+| B4 | `run-tests.sh` crashes (`PATCH_BG_PID`) | 0 | Bug | Trivial | **Open** — the line is still in `run-tests.sh:42` (checked 2026-10-16) | [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md#b4--run-testssh-crashes--fixed) |
 | B5 | Gateway API CI cannot run (versions, KIND exposure) | 2 | Configuration | Low | Open | [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md#b5---the-gateway-api-ci-cannot-run-as-written) |
 
 ---

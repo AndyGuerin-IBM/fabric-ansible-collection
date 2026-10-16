@@ -3,12 +3,27 @@
 **Date:** 2026-10-12
 **Scope:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md), checked against `roles/` (`fabric_console`, `endorsing_organization`, `ordering_organization`, `fabric_operator_crds`), `tutorial/`, and [`PRE-ANALYSIS.md`](./PRE-ANALYSIS.md) §4.4.
 **See also:** [overview](./REVIEW-MIGRATION-PLAN.md)
+**Status updated:** 2026-10-16. Every finding below carries a **Status**
+line pointing to where [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) covers
+it. "Planned" means the plan is fixed; the collection code is not written
+yet.
 
 ---
 
 ## Design blockers 🔴
 
 ### B2 — "Nothing exposed through nginx" is impossible as specified
+
+**Status — decided, planned:** decided on 2026-10-16 as a mix of options (a) and (b) below:
+the operator's Ingress objects stay. The console Ingress is made unserved
+(`spec.ingress.class: none`, MIGRATION-STEP-1.md sub-task 1.3a). Node
+Ingresses can be neutralized the same way, opt-in
+(`neutralize_node_ingresses`, sub-task 1.3c, decision D4 of
+[`URL-MANAGEMENT-NEW.md`](./URL-MANAGEMENT-NEW.md)). Checked on a CA
+(URL-MANAGEMENT-NEW.md §9 checks 2, 3, 7): nginx stops serving it, a console
+update keeps it, no pod restart. Sub-task 1.6 assertion 1 now checks "not
+served by nginx" instead of "no Ingress object". Remaining: check 3 on a
+peer before a `true` default.
 
 **Finding.** The **fabric-operator** creates the `Ingress` objects for CAs,
 peers, orderers and the console (see PRE-ANALYSIS §4.4). No Step 1 sub-task
@@ -48,6 +63,14 @@ will always fail.
 
 ### B3 — A Service port 443 cannot serve several FQDNs
 
+**Status — planned:** the proposal below was adopted: MIGRATION-STEP-1.md sub-task
+1.3b creates one collection-owned ClusterIP Service per endpoint, and never
+touches the operator's Services. The "bonus" became decision D1: with
+`hlf_network_domain == cluster_domain`, node FQDNs are Service FQDNs and no
+CoreDNS rewrite is needed. Checked on a CA on 2026-10-16 (URL-MANAGEMENT-NEW.md
+§9 check 1, strict TLS passes). Remaining: the scenario B end-to-end run
+(check 5, sub-task 1.5).
+
 **Finding.** Each component exposes several hostnames on `:443`:
 
 | Component | Hostnames | Native ports |
@@ -84,6 +107,14 @@ DNS label is limited to 63 characters.
 
 ### Variables and facts
 
+**Status — planned:** all three items are covered by the shared role
+`network_domains` (MIGRATION-STEP-1.md sub-task 1.1): Corefile read through
+`k8s_info` with cross-check, included with `include_role` by every role,
+facts renamed (`hlf_network_domain_is_cluster_local`, `hlf_node_domain`). The
+cluster-local item is resolved by decision D1. The prototype
+(`.url_management_new_checks/network_domains/`) passes 13/13 test cases on
+KIND and `ansible-lint`.
+
 - **`cluster_domain` discovery:** `kubectl exec deployment/coredns -- awk`
   always fails (the CoreDNS image is distroless, without `awk` or a shell;
   CoreDNS pods use `dnsPolicy: Default`, so their `resolv.conf` has no cluster
@@ -104,6 +135,12 @@ DNS label is limited to 63 characters.
 
 ### Organization roles
 
+**Status — planned:** the guarded Kubernetes dependency and the CR names
+are covered by MIGRATION-STEP-1.md sub-task 1.3b: Kubernetes tasks only for
+unexposed components, names stripped of non-`[a-z0-9]` and checked against
+the returned URLs, `<name>node<i>` for ordering nodes. The two Step 3 items
+moved to the Step 3 review. Remaining: check multi-peer names on a run.
+
 - Adding `kubernetes.core.k8s` tasks to `endorsing_organization` /
   `ordering_organization` introduces a dependency on a kubeconfig and the
   `kubernetes` library, whereas these roles currently only talk to the console
@@ -118,6 +155,13 @@ DNS label is limited to 63 characters.
 
 ### Console
 
+**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.3 and 1.3a. Readiness
+through the console Deployment when unexposed, HTTPS on port 3000 (checked),
+cluster domain from `network_domains`, `/ak/api/v3/health` with credentials,
+and the tutorial playbook that CI runs gets the same changes. Remaining:
+align the health path in MIGRATION-STEP-0.md and MIGRATION-PREREQ-LDE.md
+(`/health` returns the UI page, not API health).
+
 - `uri http://<console>.<ns>.svc.cluster.local:3000` runs on the Ansible control
   node, which cannot resolve in-cluster names.
   → Check the Deployment readiness via `k8s_info`.
@@ -130,6 +174,14 @@ DNS label is limited to 63 characters.
   tested there.
 
 ### Expose-none CI
+
+**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.4b, 1.5 and 1.6.
+Assertions find endpoints from labelled Services; rewrites are written at
+cluster bootstrap and keep the existing Corefile; checks go through `:443`
+with `rc=0; cmd || rc=$?`. The Job takes the tutorial from the runner image,
+has its own ServiceAccount and Roles, and runs `run-tests.sh`. Image and
+RBAC were tried on KIND. Remaining: the full in-cluster run, blocked on the
+Step 0 `run-tests.sh` fix.
 
 - Hardcoded values (`fabricinfra`, `localho.st`, `org1peer`…) whereas CI uses
   `default`, `<ip>.nip.io`, randomised names, and Org2 is missing.
@@ -148,6 +200,12 @@ DNS label is limited to 63 characters.
 
 ## Documentation inconsistencies 🟡
 
+**Status — handled:** RBAC moved to MIGRATION-STEP-2.md sub-task 2.0; the
+"five-task block" text is gone (sub-task 1.3 rewritten); the `apiVersion`
+item was a real bug: the CRDs serve only `v1beta1`, and a `v1alpha2` read
+silently finds nothing (checked on KIND). The fix is in
+MIGRATION-STEP-1.md sub-task 1.3a.
+
 - RBAC (sub-task 1.2 / W4): routes are created by Ansible tasks, not by the
   operator → extending the operator's ClusterRole is unnecessary.
 - Sub-task 1.3 announces a "five-task block" but lists six tasks.
@@ -157,6 +215,11 @@ DNS label is limited to 63 characters.
 ---
 
 ## Decision required (B2)
+
+**Decided 2026-10-16:** neither option alone. The operator's Ingress
+objects stay, as in (a), but the console's is always unserved when not
+exposed, and the nodes' can be, as in (b), without any operator change. See
+B2's status above.
 
 On the nginx path, what does `expose_*: false` mean?
 
@@ -175,8 +238,9 @@ security guarantee.
 
 | Order | Action | Unblocks |
 |---|---|---|
-| 2 | Decide the semantics of `expose_*: false` on nginx | B2 |
-| 3 | Spike (a): `fabric-operator` reconciliation behaviour on a patched Service and on a deleted Ingress | B2, B3 |
-| 4 | Rewrite Step 1 around collection-owned Services | B3 |
+| 2 | ~~Decide the semantics of `expose_*: false` on nginx~~ (done 2026-10-16, see B2) | B2 |
+| 3 | ~~Spike (a): `fabric-operator` reconciliation behaviour~~ (done 2026-10-16 on KIND, URL-MANAGEMENT-NEW.md §9; the Ingress-class route replaced patching Services or deleting Ingresses) | B2, B3 |
+| 4 | ~~Rewrite Step 1 around collection-owned Services~~ (done, MIGRATION-STEP-1.md sub-task 1.3b) | B3 |
+| — | **Next:** implement Step 1; first, the Step 0 `run-tests.sh` fix (still at `run-tests.sh:42`), which blocks the in-cluster scenario B run | check 5 |
 
 See the [overview](./REVIEW-MIGRATION-PLAN.md#7-recommended-order-of-action) for the full cross-step sequencing.

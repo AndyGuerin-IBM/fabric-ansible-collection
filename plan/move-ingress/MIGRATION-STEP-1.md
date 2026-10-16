@@ -509,10 +509,12 @@ name. So:
   parameter is a small plugin change, out of scope unless the check above
   fails in practice.
 
-**Open finding F3** (URL-MANAGEMENT-NEW.md §9.1): a CA created with display
-name `Check1 CA` was stored as `Check1`, and a later module call with
-`Check1 CA` did not find it. Reproduce with a clean create (no failed health
-wait) before relying on display names here.
+**Finding F3 — closed** (URL-MANAGEMENT-NEW.md §9.1): a test CA meant to be
+`Check1 CA` was stored as `Check1`. This was a test-harness error, not a
+console behaviour: `-e ca_display_name="Check1 CA"` reaches Ansible as
+`ca_display_name=Check1 CA`, and the key=value parser keeps only `Check1`.
+The console stored exactly the name it received. Display-name lookups are
+not at risk.
 
 **Assumptions** (encoded as role defaults, so that a wrong guess means a
 default change, not a redesign):
@@ -759,8 +761,6 @@ The `delete.yml` of each organization role calls
 - [ ] Add the delete calls to both organization roles' `delete.yml`.
 - [ ] Make the verify step's failure message print the CR name read from the
   returned URL, so an S1 mismatch is fixable at once.
-- [ ] Reproduce finding F3 (display name stored differently) with a clean
-  create; adjust the module call if it holds.
 - [ ] Document the new role in `docs/source/roles/` (internal, but its
   defaults are user-overridable).
 - [ ] Run `ansible-lint` on the new role and all modified task files.

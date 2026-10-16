@@ -17,7 +17,8 @@ C=plan/move-ingress/.url_management_new_checks
 # Check 1: decoupled node domain (restart the console: the deployer reads settings at startup, F1)
 kubectl patch ibpconsole hlf-console --type merge -p '{"spec":{"deployer":{"domain":"default.svc.cluster.local"}}}'
 kubectl rollout restart deploy/hlf-console && kubectl rollout status deploy/hlf-console
-ansible-playbook -i localhost, -c local $C/playbooks/create-ca.yml -e ca_display_name="Check1 CA" -e ca_wait=20
+# Pass names containing spaces as JSON: -e key="a b" is cut at the space (finding F3).
+ansible-playbook -i localhost, -c local $C/playbooks/create-ca.yml -e '{"ca_display_name": "Check1 CA", "ca_wait": 20}'
 kubectl get ibpca check1 -o jsonpath='{.spec.domain}'
 kubectl apply -f $C/manifests/check1-per-endpoint-services.yml
 

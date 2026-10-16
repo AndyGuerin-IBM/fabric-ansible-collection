@@ -33,10 +33,13 @@ sub-task 1.3b are needed in **both** cases.
 - `roles/fabric_operator_crds/defaults/main.yml` contains `ingress_type: nginx`,
   the six `expose_*` flags, the three port variables, `gateway_class_name`,
   `ingress_domain`, and `cluster_domain`.
-- A new task file `roles/fabric_operator_crds/tasks/k8s/set_facts.yml` attempts
-  to auto-discover the real cluster domain from a running pod; falls back to the
-  user-supplied `cluster_domain` value with a warning if discovery fails; errors
-  if the discovered value contradicts a user-supplied non-default value.
+- A new task file `roles/fabric_operator_crds/tasks/k8s/set_facts.yml` resolves
+  `cluster_domain`. It always tries, as a best effort, to read the domain
+  from the `kubernetes` plugin line of the Corefile in the
+  `kube-system/coredns` ConfigMap (`kubernetes.core.k8s_info`, no `kubectl`,
+  no `pods/exec`), then reconciles it with the user value: a mismatch is an
+  error; an undiscoverable domain is a warning when the user set one and an
+  error when they did not.
 - `ansible-lint` and `yamllint` pass on all modified files.
 - All existing tests pass without setting any new variable.
 
@@ -46,73 +49,123 @@ sub-task 1.3b are needed in **both** cases.
 hostnames (e.g. `localho.st`, `example.com`). The operator templates component
 FQDNs as `<namespace>-<slug>-<role>.<ingress_domain>`. Default: `localho.st`.
 
-`cluster_domain` — the Kubernetes cluster search domain (e.g. `cluster.local`).
+`cluster_domain` — the Kubernetes cluster DNS zone (e.g. `cluster.local`).
 Used by sub-task 1.1b to detect cluster-local deployments and by sub-task 1.4b
 as a literal value in CoreDNS rewrite target FQDNs
-(`<svc>.<namespace>.svc.<cluster_domain>`). Default: `cluster.local`.
+(`<svc>.<namespace>.svc.<cluster_domain>`). Default: `""` (sentinel meaning
+"discover it"; see below).
 
-**Auto-discovery of `cluster_domain`:**
+**Resolution of `cluster_domain`:**
 
-The true cluster domain is read at role entry from the `resolv.conf` of the
-CoreDNS deployment. Every pod's `/etc/resolv.conf` contains a `search` line:
+The earlier design ran `kubectl exec deployment/coredns -- awk … /etc/resolv.conf`.
+That cannot work (REVIEW-MIGRATION-PLAN-STEP-1.md, "Variables and facts"):
+
+- the CoreDNS image is distroless: there is no `awk` and no shell to exec into;
+- CoreDNS pods use `dnsPolicy: Default`, so their `resolv.conf` is the node's
+  and has no cluster `search` line anyway;
+- it needs the `kubectl` binary and the `pods/exec` permission, which the
+  collection otherwise never requires.
+
+The cluster domain is instead read from the **source of truth CoreDNS itself
+uses**: the Corefile stored in the `kube-system/coredns` ConfigMap. Its
+`kubernetes` plugin line lists the zones CoreDNS is authoritative for, cluster
+domain first, then the reverse zones:
 
 ```
-search <namespace>.svc.<domain> svc.<domain> <domain>
+kubernetes cluster.local in-addr.arpa ip6.arpa {
 ```
 
-The fourth `awk` field (`$4`, where `$1` is the literal word `search`) is the
-bare cluster domain. A dedicated task file performs the discovery and reconciles
-it with the user-supplied default:
+This only needs `get` on one ConfigMap through `kubernetes.core.k8s_info`, the
+module family the k8s roles already use.
+
+The lookup **always runs**, as a best effort: the discovered domain is the
+first non-`*.arpa` zone of the `kubernetes` line of
+`kube-system/coredns` → `data.Corefile`, trailing dot removed. It is then
+reconciled with the user value:
+
+| Lookup result | `cluster_domain` set by the user | Outcome |
+|---|---|---|
+| discovered `D` | empty (default) | `cluster_domain = D` |
+| discovered `D` | `D` | `cluster_domain = D` (double-checked) |
+| discovered `D` | `X ≠ D` | **fail**: names both values, asks the user to fix or remove the override |
+| not discoverable | `X` | **warning**: domain could not be verified, trusting `X` |
+| not discoverable | empty (default) | **fail**: asks the user to set `cluster_domain` |
+
+"Not discoverable" covers a ConfigMap that is absent, unreadable (RBAC) or
+has no `kubernetes` line: GKE with kube-dns, OpenShift
+(`openshift-dns/dns-default`), CoreDNS deployed under another name, or a
+restricted user. Comparison is case-insensitive and ignores a trailing dot on
+either side (`Cluster.Local.` equals `cluster.local`).
+
+The role never guesses `cluster.local`. A wrong cluster domain would only
+surface much later, as CoreDNS rewrites (sub-task 1.4b) pointing at
+non-existent Service FQDNs, or as a cluster-local `ingress_domain` silently not
+recognised (sub-task 1.1b). That is also why a mismatch is an error rather
+than a warning: when the cluster states its domain, it is right.
 
 ```yaml
 # roles/fabric_operator_crds/tasks/k8s/set_facts.yml
 
-- name: Attempt to discover cluster domain from CoreDNS pod resolv.conf
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - exec
-      - -n
-      - kube-system
-      - deployment/coredns
-      - --
-      - awk
-      - /^search/{print $4}
-      - /etc/resolv.conf
-  register: _discovered_domain
-  changed_when: false
-  failed_when: false   # discovery failure is handled below, not here
+- name: Read the CoreDNS Corefile to discover the cluster domain
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: kube-system
+    name: coredns
+  register: _coredns_cm
+  failed_when: false   # missing ConfigMap or RBAC denial handled below
 
-- name: Warn and keep user-supplied cluster_domain when discovery fails
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: could not auto-discover the cluster domain
-      (kubectl exec failed: {{ _discovered_domain.stderr | default('') }}).
-      Using cluster_domain='{{ cluster_domain }}' as supplied.
-      If this value is wrong, set cluster_domain explicitly in your vars file.
-  when: _discovered_domain.rc != 0 or (_discovered_domain.stdout | trim) == ''
+- name: Normalise the user and discovered cluster domains
+  ansible.builtin.set_fact:
+    _user_cluster_domain: >-
+      {{ cluster_domain | default('', true) | lower | regex_replace('\.$', '') }}
+    _discovered_cluster_domain: >-
+      {{ (_coredns_cm.resources | default([]) | first | default({}))
+           .get('data', {}).get('Corefile', '')
+         | regex_findall('(?m)^\s*kubernetes\s+([^{\n]+)')
+         | map('split') | flatten
+         | reject('search', '\.arpa\.?$')
+         | map('lower') | map('regex_replace', '\.$', '')
+         | first | default('') }}
+    _cluster_domain_lookup_error: >-
+      {{ _coredns_cm.msg | default('no kubernetes plugin line in the Corefile') }}
 
-- name: Fail if discovered cluster domain contradicts user-supplied value
+- name: Fail when the user cluster_domain contradicts the cluster
   ansible.builtin.fail:
     msg: >-
-      The cluster domain auto-discovered from the cluster
-      ('{{ _discovered_domain.stdout | trim }}') does not match the
-      cluster_domain variable you set ('{{ cluster_domain }}').
-      Either remove cluster_domain from your vars file to accept the
-      auto-discovered value, or correct it to
-      '{{ _discovered_domain.stdout | trim }}'.
+      cluster_domain='{{ _user_cluster_domain }}' does not match the cluster
+      domain '{{ _discovered_cluster_domain }}' declared in the
+      kube-system/coredns ConfigMap. Set cluster_domain to
+      '{{ _discovered_cluster_domain }}', or remove it from your vars file.
   when:
-    - _discovered_domain.rc == 0
-    - (_discovered_domain.stdout | trim) != ''
-    - cluster_domain != 'cluster.local'            # user overrode the default
-    - cluster_domain != (_discovered_domain.stdout | trim)
+    - _discovered_cluster_domain != ''
+    - _user_cluster_domain != ''
+    - _user_cluster_domain != _discovered_cluster_domain
 
-- name: Override cluster_domain with auto-discovered value
-  ansible.builtin.set_fact:
-    cluster_domain: "{{ _discovered_domain.stdout | trim }}"
+- name: Fail when the cluster domain is neither set nor discoverable
+  ansible.builtin.fail:
+    msg: >-
+      Could not read the cluster domain from the kube-system/coredns ConfigMap
+      ({{ _cluster_domain_lookup_error }}). Set cluster_domain explicitly in
+      your vars file (usually 'cluster.local'; check with your cluster
+      administrator or the kubelet --cluster-domain setting).
   when:
-    - _discovered_domain.rc == 0
-    - (_discovered_domain.stdout | trim) != ''
+    - _discovered_cluster_domain == ''
+    - _user_cluster_domain == ''
+
+- name: Warn that the user cluster_domain could not be verified
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: could not read the cluster domain from the kube-system/coredns
+      ConfigMap ({{ _cluster_domain_lookup_error }}). Trusting
+      cluster_domain='{{ _user_cluster_domain }}' as supplied.
+  when:
+    - _discovered_cluster_domain == ''
+    - _user_cluster_domain != ''
+
+- name: Set the effective cluster_domain
+  ansible.builtin.set_fact:
+    cluster_domain: "{{ _discovered_cluster_domain or _user_cluster_domain }}"
 
 # Only <namespace>.svc.<cluster_domain> is a usable cluster-local domain: the
 # FQDN <ns>-<cr>-<endpoint>.<ns>.svc.<cluster_domain> is then exactly the FQDN
@@ -148,16 +201,25 @@ it with the user-supplied default:
   # (caught at role entry by sub-task 1.1b).
   ingress_domain: localho.st
 
-  # Kubernetes cluster search domain.  The role attempts to auto-discover this
-  # at runtime from a CoreDNS pod's /etc/resolv.conf.  If discovery succeeds
-  # this default is silently overridden; if it fails this value is used and a
-  # warning is printed.  Override explicitly when the auto-discovery cannot run
-  # (e.g. no running pods yet) or when your cluster uses a non-standard domain.
-  cluster_domain: cluster.local
+  # Kubernetes cluster DNS domain. The role always tries to read it from the
+  # kubernetes plugin line of the kube-system/coredns ConfigMap:
+  # - empty: the discovered value is used;
+  # - set: it must match the discovered value, otherwise the play fails.
+  # When that ConfigMap is absent or unreadable (GKE kube-dns, OpenShift,
+  # restricted RBAC) a set value is trusted with a warning, and an empty one
+  # fails the play: set it explicitly (usually cluster.local).
+  cluster_domain: ""
   ```
-- [ ] Create `roles/fabric_operator_crds/tasks/k8s/set_facts.yml` with the five
-  tasks shown above (discover, warn-on-failure, conflict-error, override,
-  set `ingress_domain_is_cluster_local`).
+- [ ] Create `roles/fabric_operator_crds/tasks/k8s/set_facts.yml` with the
+  tasks shown above (read ConfigMap, normalise, fail-on-mismatch,
+  fail-when-unset-and-undiscoverable, warn-when-unverifiable, set effective
+  `cluster_domain`, set `ingress_domain_is_cluster_local`).
+- [ ] Test the extraction expression against the Corefiles of KIND,
+  k3s, EKS and AKS (all `kubernetes cluster.local in-addr.arpa ip6.arpa`)
+  and a Corefile with a custom domain.
+- [ ] Test the five rows of the reconciliation table, including a
+  case/trailing-dot-only difference (`Cluster.Local.` vs `cluster.local`,
+  which must pass).
 - [ ] Include `set_facts.yml` at the top of
   `roles/fabric_operator_crds/tasks/k8s/create.yml` and the equivalent
   `create.yml` in `roles/hlfsupport_console`, before any task that branches on
@@ -172,19 +234,29 @@ it with the user-supplied default:
 **Relevant context:**
 - The defaults file must not contain conditional logic — only `key: value`
   defaults. All conditional logic lives in `set_facts.yml`.
-- `awk` field `$4` (not `$3`) is the bare cluster domain because `$1` is the
-  literal word `search` and the standard three search entries are
-  `<ns>.svc.<domain>`, `svc.<domain>`, `<domain>`.
-- The conflict-error guard uses `cluster_domain != 'cluster.local'` to
-  distinguish "user explicitly set a value" from "user left the default".
-  An alternative is to use a sentinel default (e.g. `cluster_domain: ""`) so
-  any non-empty user value is treated as explicit; choose whichever makes the
-  Ansible logic cleaner.
+- The `""` sentinel is how the role tells "user set a value" from "user left
+  the default". A user value is double-checked against the Corefile whenever
+  the Corefile is readable; it is only trusted blindly (with a warning) when
+  it is not.
+- After `set_facts.yml`, `cluster_domain` is never empty. Every later task can
+  use it directly. **Caveat:** this relies on `set_fact` overriding the
+  variable, which does not happen when `cluster_domain` is passed as an extra
+  var (`-e`, highest precedence): an empty `-e cluster_domain=` would then
+  stay empty after discovery. Pass it from a vars file (as `run-tests.sh`
+  does with `common-vars.yml`, MIGRATION-PLAN.md §5.3.1), or, if `-e` support
+  is required, rename the effective fact (e.g. `cluster_domain_effective`) and
+  use it in sub-tasks 1.1b and 1.4b.
+- Reverse zones (`in-addr.arpa`, `ip6.arpa`) are filtered out rather than
+  relying on position, because some distributions add extra zones to the
+  same `kubernetes` line.
 - `ingress_domain_is_cluster_local` is consumed by sub-tasks 1.1b and 1.4b;
   `ingress_domain_is_unsupported_cluster_local` by sub-task 1.1b only.
   Sub-task 1.3b runs regardless of either fact.
-- The `kubectl exec` requires a valid kubeconfig on the Ansible control node —
-  already a prerequisite for all other collection tasks.
+- The lookup needs a valid kubeconfig on the Ansible control node, which is
+  already a prerequisite for the k8s roles, and `get` on
+  `configmaps/coredns` in `kube-system`. Without that permission, setting
+  `cluster_domain` is enough (warning, no extra RBAC needed); leaving it empty
+  fails with the "set cluster_domain" message.
 
 ---
 
@@ -1199,8 +1271,12 @@ A Step 1 delivery is considered complete when all of the following pass:
      the conflicting flags.
    - Setting any other `*.<cluster_domain>` value (e.g. `svc.cluster.local`)
      fails immediately, naming the only supported form.
-   - The cluster domain is auto-discovered from a pod's `/etc/resolv.conf`; a
-     fallback warning is printed (not an error) when discovery fails.
+   - The cluster domain is always looked up, best effort, in the
+     `kube-system/coredns` ConfigMap via `k8s_info` (no `kubectl exec`).
+     When found, it is used if `cluster_domain` is empty, and a different
+     user-set `cluster_domain` fails the play naming both values. When not
+     found, a user-set `cluster_domain` is trusted with a warning, and an
+     empty one fails the play asking the user to set it.
 8. `docs/source` builds without warnings (`make -C docs html`).
 9. No Gateway API CRD, template, task, or Kubernetes resource is introduced —
    the Gateway API path is entirely absent from the codebase at this stage.

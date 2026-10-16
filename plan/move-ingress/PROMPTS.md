@@ -515,3 +515,35 @@ As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md, a service por
 A few adjustments are needed for it to work end to end. In particular, every endpoint needs its own 443 Service. Each node advertises several endpoints on 443: API, operations, grpcweb, and admin on orderers. With your CoreDNS rewrites, -operations and the other hostnames still resolve to the same Service. There, 443 would reach the API port rather than operations (9443 on peers and CAs, 8443 on orderers), grpcweb (7443) or orderer admin (9443). That would break the console's status checks and grpcweb proxy, the collection's health waits, and joining orderers to channels. A Service port can map 443 to only one target, so this approach requires creating one Service per endpoint type, each with a matching CoreDNS rewrite. That also avoids modifying operator-managed objects.
 
 Fix @plan/move-ingress/MIGRATION-STEP-1.md plan to create one service per endpoint type.
+
+## Fix cluster domain discovery
+
+As reviewed in @plan/move-ingress/REVIEW-MIGRATION-PLAN-STEP-1.md in Implementation mistakes (fixable without changing the design), we have a cluster domain URL discovery issue :
+
+- **`cluster_domain` discovery:** `kubectl exec deployment/coredns -- awk`
+  always fails (the CoreDNS image is distroless, without `awk` or a shell;
+  CoreDNS pods use `dnsPolicy: Default`, so their `resolv.conf` has no cluster
+  `search` line). It also requires `kubectl` and the `pods/exec` permission.
+  → Read the Corefile from the `kube-system/coredns` ConfigMap via `k8s_info`,
+  or keep `cluster.local` as the default with a documented override; use `""` as
+  the sentinel value.
+
+Fix in the plan @plan/move-ingress/MIGRATION-STEP-1.md to solve that problem
+
+---
+
+If lookup fails: it fallback to the user to define the cluster domain.
+
+---
+
+```
+A non-empty user value always wins and is not cross-checked
+against the Corefile: the override exists precisely for clusters where the
+Corefile lookup is wrong or unavailable.
+````
+
+It needs to be double checks as best effort.
+If it's possible to get the cluster domain and there is a gap an error should be raised.
+If it's not possible to get the cluster domain then a warning is displayed telling we trust user cluster domain.
+
+

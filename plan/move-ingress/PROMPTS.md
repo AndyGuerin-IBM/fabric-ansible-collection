@@ -742,3 +742,38 @@ So for Step 1, these findings need no more design work. The remaining work is th
 We're focusing on step 1 fixing. Move the last finding which requires changes on step3 within @plan/REVIEW-MIGRATION-PLAN-STEP-3.md.
 
 
+## Check remaining review `Console`
+
+Given the last changes, summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Console`
+
+<<<
+All three "Console" findings are addressed in MIGRATION-STEP-1.md sub-task 1.3. What remains is implementation, plus three small loose ends.
+
+┌─────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────┐
+│                       Review finding                        │                                         Status                                          │               What remains               │
+├─────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────┤
+│                                                             │ Handled in the plan. With expose_console: false, readiness uses the console             │ Implementation only.                     │
+│ uri http://<console>.<ns>.svc.cluster.local:3000 runs on    │ Deployment's Available condition through k8s_info. Nothing polls an in-cluster URL from │ console_incluster_url is used solely     │
+│ the control node, which can't resolve in-cluster names      │  the control node.                                                                      │ from inside the cluster (CI Job, 1.6     │
+│                                                             │                                                                                         │ assertion 2).                            │
+├─────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────┤
+│ Hardcoded cluster.local, http :3000 to check, inconsistent  │ Mostly handled. HTTPS on port 3000 is confirmed by check 4, and every in-cluster        │ Three loose ends, below.                 │
+│ health path                                                 │ console URL in the plan is now https://. The cluster domain comes from network_domains. │                                          │
+├─────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────┤
+│                                                             │ Handled in the plan. Sub-task 1.3 now describes each role as it really is:              │ Implementation only. Ideally CI would    │
+│ fabric_console has nothing to "split"; CI doesn't use the   │ hlfsupport_console has an Ingress wait to guard, fabric_console only waits for its      │ use the fabric_console role, but that's  │
+│ role                                                        │ Deployment. The same changes apply to tutorial/00-deploy-fabric-console.yml, which is   │ outside this finding.                    │
+│                                                             │ what CI runs.                                                                           │                                          │
+└─────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────┘
+
+The three loose ends:
+1. The health path is still inconsistent, and the paths aren't equivalent. I just tested both on the live console:
+   - /health returns 200 without credentials, but it's the UI's HTML page, so it proves nothing about the API.
+   - /ak/api/v3/health returns 401 without credentials and 200 with them, with a real OPTOOLS/OS health payload.
+
+   Step 1 uses /ak/api/v3/health, but MIGRATION-STEP-0.md:123 and MIGRATION-PREREQ-LDE.md:195-198 still say /health. Those two files should be aligned, with credentials.
+2. One hardcoded cluster.local remains. In the prototype network_domains role (tasks/main.yml:124), console_incluster_url falls back to cluster.local when the cluster domain wasn't resolved, which happens in the default all-exposed case. It should stay empty instead, since nothing uses it then. The same fallback appears in the 1.6 assertion 2 command (${CLUSTER_DOMAIN:-cluster.local}), where it's harmless because CI sets CLUSTER_DOMAIN.
+3. The console certificate doesn't cover its in-cluster name (finding F2). This is documented in 1.3a: the collection never verifies certificates, so it isn't affected. Nothing more to do in Step 1 unless strict in-cluster clients are wanted.
+
+None of these needs a design change. Should I align the health path in Step 0 and the setup guide, and remove the cluster.local fallback from the prototype?
+>>>

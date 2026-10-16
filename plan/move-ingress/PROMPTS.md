@@ -678,6 +678,7 @@ The next step is to apply URL-MANAGEMENT-NEW.md §7.3 to MIGRATION-STEP-1.md, wh
 
 Summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Variables and facts`
 
+>>>
 Review finding: cluster_domain discovery (kubectl exec … awk always fails)
 Plan: Sub-task 1.1: read the kube-system/coredns ConfigMap, check a value you set against it, warn or fail when it can't be read
 Verified: Prototype role passed 13/13 cases against the live Kind ConfigMap; the -e question is solved (computed values have their own names)
@@ -701,5 +702,43 @@ Three adjacent items affect the same tasks:
 - Check 3 on a peer: needed before node Ingress neutralization can become the default.
 
 The natural next step is implementing sub-task 1.1 for real, since everything else builds on it. Should I start?
+<<<
+
+## Check remaining review `Organization roles` and update STEP 3 review
+
+Given the last changes, summarize what remains to be handled to cover STEP 1 Review `Implementation mistakes (fixable without changing the design)`/`Organization roles`
+
+<<<
+Two of the four "Organization roles" findings are handled in MIGRATION-STEP-1.md but not implemented. The other two are Step 3 items that Step 1 never touched. One correction first: finding F3 was my test error, not a console bug.
+
+F3 was my command-line quoting. -e ca_display_name="Check1 CA" reaches Ansible as ca_display_name=Check1 CA. Ansible's key=value parser then keeps only Check1. I reproduced it just now: that form gives [Check1], while -e '{"ca_display_name":"Check1 CA"}' gives [Check1 CA]. So the console stored exactly the name it received. Display-name lookup is not at risk, and F3 should be closed in URL-MANAGEMENT-NEW.md §9.1 and in the 1.3b todo list.
+
+Review finding: Kubernetes tasks add a kubeconfig and kubernetes dependency to roles that only talk to the console REST API
+Status: Handled in the plan. The Kubernetes tasks run only when a component is unexposed. network_domains reads the cluster only when the cluster domain matters, so the default path needs no
+kubeconfig. The review asked for an explicit guard; the expose_* flags act as that guard.
+What remains: Implementation: run the default setup without a kubeconfig to prove it. Document the requirement (kubeconfig, kubernetes library, permission to create Services) for unexposed mode.
+────────────────────────────────────────
+Review finding: CR names: ca_name | lower | replace(' ', '-') gives org1-ca, but the operator name is org1ca; an ordering service has N nodes, not one Service
+Status: Handled in the plan. 1.3b strips all non-[a-z0-9] characters, matching the CA check (Check1 CA → check1). Ordering nodes are named <name>node<i>, confirmed in the operator source. Names are
+checked against the returned URLs.
+What remains: Edge cases: a name already taken gets a suffix (org1peer0), and a leading digit gets an ibp prefix. The check catches both but can't fix them. Multiple peers: the role names them {{
+peer_name }}{{ item }} (Org1 Peer1 → org1peer1); verify this on a cluster. Registers: the CA, peer and ordering-service module calls aren't registered today (only the org admin is), so the 1.3b and
+V5 blocks need these added.
+────────────────────────────────────────
+Review finding: peer_api_url, ca_api_url, orderer_api_url are never defined
+Status: Not handled. These are used by MIGRATION-STEP-3.md and MIGRATION-PLAN.md §5.6 (route hostnames), not by Step 1.
+What remains: Step 3: derive them from the new registered module results (endorsing_organization_ca.certificate_authority.api_url, the peer results, and every entry of the ordering_service list). Step
+1's registers lay the groundwork.
+────────────────────────────────────────
+Review finding: The certificate_authority role doesn't exist; the CA is created inside the organization roles
+Status: Not handled. Step 3 still points at roles/certificate_authority/….
+What remains: Step 3: move the CA route tasks into both organization roles.
+
+So for Step 1, these findings need no more design work. The remaining work is the implementation (registers, the 1.3b blocks, and a no-kubeconfig run of the default path), one live check of multi-peer names, and closing F3. Should I record the F3 correction and fold the two Step 3 items into MIGRATION-STEP-3.md?
+>>>
+
+---
+
+We're focusing on step 1 fixing. Move the last finding which requires changes on step3 within @plan/REVIEW-MIGRATION-PLAN-STEP-3.md.
 
 

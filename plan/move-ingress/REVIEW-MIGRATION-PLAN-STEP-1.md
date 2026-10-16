@@ -111,10 +111,10 @@ DNS label is limited to 63 characters.
   (`target == 'k8s'` or opt-in).
 - `ca_name | lower | replace(' ', '-')` yields `org1-ca`; the operator produces
   `org1ca`. An ordering service has N nodes, not a single Service.
-- `peer_api_url`, `ca_api_url`, `orderer_api_url` (W6) are never defined →
-  register the module outputs.
-- The `certificate_authority` role (sub-task 3.2, §5.6.9) does not exist: the CA
-  is created inside the organization roles.
+- *(Moved to the [Step 3 review](./REVIEW-MIGRATION-PLAN-STEP-3.md#organization-roles)
+  on 2026-10-16: undefined `peer_api_url` / `ca_api_url` / `orderer_api_url`,
+  and the non-existent `certificate_authority` role. Both concern Step 3
+  route tasks, not Step 1.)*
 
 ### Console
 

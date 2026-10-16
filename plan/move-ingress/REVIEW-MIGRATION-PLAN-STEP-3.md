@@ -46,6 +46,31 @@ natively supported by `fabric-operator` (sub-task 3.15).
 
 ---
 
+## Implementation mistakes (fixable without changing the design) 🟠
+
+### Organization roles
+
+*Moved from the [Step 1 review](./REVIEW-MIGRATION-PLAN-STEP-1.md#organization-roles)
+on 2026-10-16: both findings concern the Step 3 route tasks, not Step 1.*
+
+- **`peer_api_url`, `ca_api_url`, `orderer_api_url` are never defined.**
+  `MIGRATION-STEP-3.md` (sub-tasks 3.2–3.4, tutorials) and
+  `MIGRATION-PLAN.md` §5.6 derive the route hostnames from them
+  (`… | urlsplit('hostname')`), but no role or module sets them.
+  → Derive them from the registered module results. Step 1 adds those
+  registers (`MIGRATION-STEP-1.md` sub-task 1.3b):
+  `endorsing_organization_ca.certificate_authority.api_url`, the
+  `endorsing_organization_peer` / `endorsing_organization_peers` results, and
+  the ordering-service result, which is a **list** (one entry per node: one
+  route per node, not one per ordering service).
+- **The `certificate_authority` role does not exist** (sub-task 3.2,
+  `MIGRATION-PLAN.md` §5.6.9): the CA is created inside
+  `endorsing_organization` and `ordering_organization`.
+  → Put the CA route tasks in both organization roles, after the CA module
+  call.
+
+---
+
 ## Documentation inconsistencies 🟡
 
 - Gateway API versions: the roadmap states **1.6** minimum from Step 3, but

@@ -6,15 +6,15 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: {name: ansible-runner, namespace: default}
 rules:
-  # Per-endpoint Services (sub-task 1.3b)
+  # Per-endpoint Services (sub-task 1.6)
   - apiGroups: [""]
     resources: [services]
     verbs: [get, list, create, patch, update, delete]
-  # Node CRs: read for checks, patch for neutralize_node_ingresses (sub-task 1.3c)
+  # Node CRs: read for checks, patch for neutralize_node_ingresses (sub-task 1.7)
   - apiGroups: [ibp.com]
     resources: [ibpcas, ibppeers, ibporderers]
     verbs: [get, list, patch]
-  # Wait for the Ingress class after neutralization (sub-task 1.3c)
+  # Wait for the Ingress class after neutralization (sub-task 1.7)
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
     verbs: [get, list]

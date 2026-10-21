@@ -1,9 +1,9 @@
 # Step 2 — First Kubernetes Gateway API Implementation: Console HTTPRoute
 
-**Roadmap reference:** [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) — Step 2  
-**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W2, partial W3, W4 (sub-task 2.0, moved from Step 1), W5 (Gateway resource), §5.6.1 of W6, partial W7  
-**Prerequisite:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) fully completed  
-**Gateway API version target:** Kubernetes Gateway API **v1.3** (minimum; `HTTPRoute` is GA, `Gateway` `Programmed` condition is stable)  
+**Roadmap reference:** [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) — Step 2
+**Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — W2, partial W3, W4 (sub-task 2.0, moved from Step 1), W5 (Gateway resource), §5.6.1 of W6, partial W7
+**Prerequisite:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) fully completed
+**Gateway API version target:** Kubernetes Gateway API **v1.3** (minimum; `HTTPRoute` is GA, `Gateway` `Programmed` condition is stable)
 **Status:** `[ ] pending`
 
 ---
@@ -67,7 +67,7 @@ by the operator.
   OpenShift Routes. If it doesn't, drop the operator ClusterRole change and
   grant the rules to the playbook identity instead: the user's kubeconfig,
   or the in-cluster CI Job's ServiceAccount (`MIGRATION-STEP-1.md` sub-task
-  1.5, `.github/k8s/ansible-runner-rbac.yml`).
+  1.9, `.github/k8s/ansible-runner-rbac.yml`).
 - `hlfsupport_console`'s ClusterRole is the console's own role; same
   question: the console does not create Gateway API objects either.
 

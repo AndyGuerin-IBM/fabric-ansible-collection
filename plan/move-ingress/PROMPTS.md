@@ -1022,3 +1022,12 @@ The inconsistency: the overview now says B4 is Open, but REVIEW-MIGRATION-PLAN-S
 
 Fixing run-tests.sh (B4 and the run-ID stamping) unblocks both the Step 0 baseline and Step 1's end-to-end check. The doc items can follow in the same pass. Should I start?
 >>>
+
+---
+
+## Refine Step 1 plan: numbering, scenario and  human checks
+
+Before starting the Step 1 implementation, clean up the plan
+- renumber the sub-tasks  1.1, 1.2, 1.3... and fix the references in the other docs
+- recall at the start which scenarios A, B, C Step 1 handles, with a Mermaid diagram for each in `SCENARIOS-MERMAID.md`, linked from the plan;
+- we'll implement sub task by sub task so each sub-task needs a check a human can run to see that it works

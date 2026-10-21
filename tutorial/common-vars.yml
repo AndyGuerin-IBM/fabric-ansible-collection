@@ -14,7 +14,9 @@ channel_name: "mychannel"
 smart_contract_name: "fabcar"
 smart_contract_version: "1.0.0"
 smart_contract_sequence: 1
-smart_contract_package: "fabcar@1.0.0.tgz"
+# CCaaS package of fabcar@1.0.0.tgz, written by deploy_chaincode_server.sh:
+# the peers cannot build a chaincode themselves (docker build is disabled).
+smart_contract_package: "fabcar-ccaas@1.0.0.tgz"
 # smart_contract_constructor: "initLedger"
 # smart_contract_endorsement_policy: ""
 # smart_contract_collections_file: ""

@@ -7,7 +7,7 @@ This review is split by step. This document is the overview and index;
 per-step detail (blocking issues, implementation mistakes, documentation
 inconsistencies, decisions) lives in:
 
-- [`REVIEW-MIGRATION-PLAN-STEP-0.md`](./REVIEW-MIGRATION-PLAN-STEP-0.md) — CI / LDE baseline (B4)
+- [`REVIEW-MIGRATION-PLAN-STEP-0.md`](./REVIEW-MIGRATION-PLAN-STEP-0.md) — CI / LDE baseline (B4, B6)
 - [`REVIEW-MIGRATION-PLAN-STEP-1.md`](./REVIEW-MIGRATION-PLAN-STEP-1.md) — `ingress_type` / `expose_*`, nginx expose-none (B2, B3)
 - [`REVIEW-MIGRATION-PLAN-STEP-2.md`](./REVIEW-MIGRATION-PLAN-STEP-2.md) — Gateway API, console `HTTPRoute` (B5)
 - [`REVIEW-MIGRATION-PLAN-STEP-3.md`](./REVIEW-MIGRATION-PLAN-STEP-3.md) — Gateway API, all components `TLSRoute` + native ports (B1)
@@ -22,7 +22,7 @@ inconsistencies, decisions) lives in:
 | [`GATEWAY-API-IMPLEMENTATIONS.md`](./GATEWAY-API-IMPLEMENTATIONS.md) | Comparison of Gateway API implementations → **Envoy Gateway** selected for CI / PoC |
 | [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) | Monolithic plan in 7 workstreams (W1 to W7) with code snippets |
 | [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) | Split into 4 independently shippable deliverables (Step 0 → 3) |
-| [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) | Fix CI and local test execution — marked `complete` (commit `29fd64f`) — review: [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
+| [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) | Fix CI and local test execution — in progress: B4 and B6 fixed 2026-10-21 (branch `step0-fix`), `TEST_RUN_ID`, CI and LDE doc still open — review: [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
 | [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) | `ingress_type` / `expose_*` variables, nginx "expose-none" scenario (port 443 added to Services, CoreDNS rewrites, in-cluster Ansible Job) — review: [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |
 | [`MIGRATION-STEP-2.md`](./MIGRATION-STEP-2.md) | First Gateway API implementation: console `HTTPRoute` only — review: [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md) |
 | [`MIGRATION-STEP-3.md`](./MIGRATION-STEP-3.md) | CA / peer / orderer `TLSRoute`s, 7054 / 7050 / 7051 listeners, `api_url` port changes — review: [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md) |
@@ -55,8 +55,9 @@ the architecture — see the per-step reviews linked above.
 | B1 | Native ports cannot work without changing the operator | 3 (and 2) | Design | High | Open | [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md#b1---native-ports-7051--7050--7054-cannot-work) |
 | B2 | "Nothing exposed" is impossible on nginx as specified | 1 | Decision | — | **Decided** 2026-10-16 — planned, not implemented | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b2---nothing-exposed-through-nginx-is-impossible-as-specified) |
 | B3 | A Service port 443 cannot serve several FQDNs | 1 | Design | Medium | **Planned** 2026-10-16 (per-endpoint Services) — not implemented | [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md#b3---a-service-port-443-cannot-serve-several-fqdns) |
-| B4 | `run-tests.sh` crashes (`PATCH_BG_PID`) | 0 | Bug | Trivial | **Open** — the line is still in `run-tests.sh:42` (checked 2026-10-16) | [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md#b4--run-testssh-crashes--fixed) |
+| B4 | `run-tests.sh` crashes (`PATCH_BG_PID`) | 0 | Bug | Trivial | **Fixed** 2026-10-21 (branch `step0-fix`) — full local run `exit=0` | [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md#b4--run-testssh-crashes--fixed) |
 | B5 | Gateway API CI cannot run (versions, KIND exposure) | 2 | Configuration | Low | Open | [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md#b5---the-gateway-api-ci-cannot-run-as-written) |
+| B6 | Tutorial chaincode cannot be installed (`docker build is disabled`) | 0 | Bug | Low | **Fixed** 2026-10-21 (branch `step0-fix`, chaincode as a service) — to validate with the team | [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md#b6--the-tutorial-chaincode-cannot-be-installed--fixed) |
 
 ---
 
@@ -94,7 +95,7 @@ per-step review. The items below don't belong to a single step:
 
 | Order | Action | Unblocks |
 |---|---|---|
-| 1 | ~~Fix `PATCH_BG_PID` in `run-tests.sh`~~ (done) — re-run the full test suite, then implement `TEST_RUN_ID` stamping | B4 — actual completion of [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
+| 1 | ~~Fix `PATCH_BG_PID` in `run-tests.sh`~~ and ~~run the tutorial chaincode as a service~~ (done 2026-10-21, full local run `exit=0`) — then implement `TEST_RUN_ID` stamping, run the CI, align the LDE doc | B4, B6 — actual completion of [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
 | 2 | Decide the semantics of `expose_*: false` on nginx | B2 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |
 | 3 | Spikes (a) operator and (b) Envoy Gateway passthrough on 443 | B1, B3, B5 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md), [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md), [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md) |
 | 4 | Rewrite Step 1 around collection-owned Services | B3 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |

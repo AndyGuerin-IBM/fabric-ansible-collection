@@ -2,7 +2,7 @@
 
 **Roadmap reference:** Pre-requisite step for [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md)  
 **Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — §5.3, [`PRE-ANALYSIS.md`](./PRE-ANALYSIS.md) — §2.5  
-**Status:** `[x] complete`
+**Status:** `[ ] in progress` — B4 and B6 fixed on 2026-10-21 (branch `step0-fix`, full local run `exit=0`); `TEST_RUN_ID` stamping, the GitHub Actions run and the LDE doc are still open ([review](./REVIEW-MIGRATION-PLAN-STEP-0.md))
 
 ---
 
@@ -14,6 +14,7 @@ The current Functional Verification (FV) test setup in `.github/workflows/fvtest
    - Immediate crash under `set -euo pipefail` when invoked without arguments (`$1`, `$2` unbound variables).
    - No injection of connection parameters (`api_endpoint`, `api_key`, `api_secret`, `k8s_namespace`) into `tutorial/*-vars.yml`.
    - Fixed resource names colliding on repeat or parallel runs (no dynamic test run ID stamping).
+3. **The tutorial chaincode cannot be installed**: `tutorial/fabcar@1.0.0.tgz` is a `node` package that the peer must build, but the peers of the console deployed for the tests cannot build a chaincode (`docker build is disabled`, review B6).
 
 The goal of **Step 0** is to repair the baseline CI workflow and test scripts so that the entire tutorial test suite runs and passes cleanly against a local Kind cluster and on GitHub Actions, establishing a functional baseline before introducing Gateway API changes.
 
@@ -120,10 +121,48 @@ trap - EXIT
 **Validation Checklist:**
 - [ ] Kind cluster boots and NGINX Ingress controller becomes `Ready`.
 - [ ] Operator CRDs and Console deploy without error.
-- [ ] Console `/health` endpoint responds with HTTP 200 via `https://<namespace>-<console>-console.<domain>/health`.
-- [ ] Tutorial playbooks (01 to 23) complete successfully.
+- [ ] Console API health endpoint responds with HTTP 200 via `https://<namespace>-<console>-console.<domain>/ak/api/v3/health`, with the console credentials (`/health` returns the UI page, not the API health).
+- [ ] Tutorial playbooks (01 to 23) complete successfully, including the chaincode (19 to 23).
 - [ ] Network teardown plays (97, 98, 99) cleanly delete all created resources.
 - [ ] Documented in [`plan/move-ingress/MIGRATION-PREREQ-LDE.md`](./MIGRATION-PREREQ-LDE.md).
+
+---
+
+## Sub-task 0.4 — Run the tutorial chaincode as a service (CCaaS)
+
+**Intent:** Install the tutorial chaincode on peers that cannot build one.
+
+The console deployed by `tutorial/00-deploy-fabric-console.yml` lists no
+`versions`, so it creates its default peer, `hyperledger/fabric-peer:2.5.8`.
+Its only external builder is `ccaas_builder`; the operator's peer `core.yaml`
+also declares `ibp-builder` and `k8s_builder`, which are not in the image. A
+`node` package (`fabcar@1.0.0.tgz`) is accepted by no builder, so the peer
+falls back to its disabled Docker build (review B6).
+
+**Implementation (branch `step0-fix`):**
+
+- `tutorial/ccaas/Dockerfile`: the chaincode server, built from
+  `fabcar@1.0.0.tgz` itself (`fabric-chaincode-node server`, available in its
+  `fabric-shim` 2.2).
+- `tutorial/deploy_chaincode_server.sh deploy | destroy`:
+  - `deploy` builds the image and pushes it to the KIND registry
+    (`localhost:5000`, `CCAAS_IMAGE` to override), writes the CCaaS package
+    `fabcar-ccaas@1.0.0.tgz` (label `fabcar_1.0.0`, address
+    `fabcar-ccaas.<namespace>:9999`), and runs the Deployment and Service
+    `fabcar-ccaas` with `CHAINCODE_ID` set to the package ID;
+  - `destroy` deletes them and the package.
+- `tutorial/deploy_smart_contract.sh` calls `deploy` before playbook 19;
+  `tutorial/join_network.sh destroy` calls `destroy`.
+- `tutorial/common-vars.yml`: `smart_contract_package: "fabcar-ccaas@1.0.0.tgz"`
+  (ignored by git: written at each run).
+
+**Checked on 2026-10-21:** full local run of `run-tests.sh`, `exit=0`,
+playbooks 01 → 23 then the teardown 97 → 99; the chaincode server is created
+before playbook 19 and removed by the teardown.
+
+**To validate:** the tutorial now builds an image, so the CI runner needs
+Docker and the KIND registry created by `kind_with_nginx.sh`. Both org peers
+install the same package, so a single server serves both organizations.
 
 ---
 
@@ -131,4 +170,6 @@ trap - EXIT
 
 1. **`.github/workflows/fvtest.yml`**: Provisions Fabric Operator & Console and exports correct environment variables.
 2. **`.github/scripts/run-tests.sh`**: Runs without positional arguments, updates variable configs dynamically with `yq`, and executes build/join/deploy lifecycle.
-3. **CI Pass**: GitHub Actions workflow passes cleanly on the `nginx` baseline.
+3. **Tutorial chaincode**: installed, approved and committed as a service (sub-task 0.4).
+4. **Local run**: `run-tests.sh` exits 0 on the LDE, playbooks 01 → 23 and the teardown (done 2026-10-21).
+5. **CI Pass**: GitHub Actions workflow passes cleanly on the `nginx` baseline.

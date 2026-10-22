@@ -1,0 +1,90 @@
+# Remaining TODO
+
+Things we should do but that are not part of a step yet. Most come from the
+Step 0 run of 2026-10-21 ([review](./REVIEW-MIGRATION-PLAN-STEP-0.md)).
+
+## Tests and CI
+
+### 1. Choose how the tutorial chaincode is built
+
+Today `deploy_smart_contract.sh` always runs the chaincode as a service
+(CCaaS, `tutorial/deploy_chaincode_server.sh`). The other way is to let the
+peer start the chaincode itself with `k8s_builder`. Add a parameter to pick
+one, for example `chaincode_build_mode: ccaas | k8s_builder` in
+`tutorial/common-vars.yml` (or `CHAINCODE_BUILD_MODE` in the environment),
+with `ccaas` as default.
+
+`k8s_builder` needs more than a flag:
+- a peer image that ships the builder (`k8s-fabric-peer`), set through the
+  console. The default `hyperledger/fabric-peer:2.5.8` only has
+  `ccaas_builder`.
+- a `type: k8s` package that points to the chaincode image (name and digest).
+  We still build and push an image, but the peer starts the pod.
+- the right to create the chaincode pods in the namespace.
+
+Files: `deploy_smart_contract.sh`, `deploy_chaincode_server.sh`,
+`join_network.sh` (destroy), `00-deploy-fabric-console.yml` (peer image),
+`common-vars.yml`.
+
+### 2. `TEST_RUN_ID` stamping in `run-tests.sh`
+
+Planned in Step 0 sub-task 0.2, never done. Names are fixed, so two runs or a
+leftover network collide. Take `TEST_RUN_ID` from the environment when it is
+set: Step 1 runs two Jobs on the same network (sub-tasks 1.3 and 1.9).
+
+### 3. Run `fvtest.yml` on GitHub Actions
+
+Not done yet. The runner now builds the chaincode image and pushes it to the
+KIND registry (`localhost:5000`): check that this works on the runner.
+Decide whether the workflow stays `workflow_dispatch` only, or also runs on
+push / pull request.
+
+### 4. Don't modify tracked files during a test run
+
+`run-tests.sh` patches `tutorial/common-vars.yml` and the org vars files in
+place, and the playbooks write identity files (`*.json`) in `tutorial/`.
+The identity files are git-ignored, the vars files are not: after a run,
+`git status` shows changes you must not commit. And two runs at the same time
+overwrite each other's files. Work on a copy of `tutorial/`
+(or restore the vars files on exit).
+
+## Local environment and versions
+
+### 5. Align the versions
+
+| | CI (`fvtest.yml`) | LDE doc | Runner image (Step 1) | Peers |
+|---|---|---|---|---|
+| Python | 3.10 | 3.10 | 3.9 | — |
+| Fabric | 2.4.7 | 2.5.15 under a "2.4.7" heading | 2.5.9 | 2.5.8 |
+
+Python: `fvtest.yml` moved to 3.10 on 2026-10-22. Checked locally with a fresh
+3.10 venv built only from `requirements.txt`, as the CI does: full run
+`exit=0`. Still on 3.9: `main.yml` and `publish.yml` (build, lint, publish)
+and the collection image (`Dockerfile`, `python39`), which the Step 1 runner
+image extends. Fabric: pick one version for the CLI.
+
+### 6. Fix the LDE doc (`MIGRATION-PREREQ-LDE.md`)
+
+- `yq`: `brew install yq` installs another tool, incompatible with `yq -yi`.
+  Only the Python `yq` (`pip install yq`) works.
+- Set `ANSIBLE_PYTHON_INTERPRETER` to `.venv/bin/python`, otherwise Ansible
+  uses a Python without the `kubernetes` library.
+- Rebuild and reinstall the collection after each change, otherwise an old
+  copy in `~/.ansible/collections` is used.
+- Health check: use `/ak/api/v3/health` with credentials. `/health` returns
+  the UI page.
+- Say it plainly: one test run at a time on a workstation.
+
+### 7. `build_ignore` in `galaxy.yml`
+
+`ansible-galaxy collection build` from the repository root packs `.venv/`,
+`bin/`, `builders/`, `config/`, old tarballs...: 188 MB instead of a few
+hundred KB. Add a `build_ignore` list.
+
+## Docs
+
+### 8. Step 0 sub-task 0.1 doesn't match the code
+
+It describes an inline playbook calling `fabric_console`. CI actually runs
+`tutorial/00-deploy-fabric-console.yml`, which creates an inline `IBPConsole`.
+Update the text.

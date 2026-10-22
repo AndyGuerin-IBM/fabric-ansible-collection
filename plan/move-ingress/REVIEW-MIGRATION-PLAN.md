@@ -22,7 +22,7 @@ inconsistencies, decisions) lives in:
 | [`GATEWAY-API-IMPLEMENTATIONS.md`](./GATEWAY-API-IMPLEMENTATIONS.md) | Comparison of Gateway API implementations → **Envoy Gateway** selected for CI / PoC |
 | [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) | Monolithic plan in 7 workstreams (W1 to W7) with code snippets |
 | [`MIGRATION-ROADMAP.md`](./MIGRATION-ROADMAP.md) | Split into 4 independently shippable deliverables (Step 0 → 3) |
-| [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) | Fix CI and local test execution — in progress: B4 and B6 fixed 2026-10-21 (branch `step0-fix`), `TEST_RUN_ID`, CI and LDE doc still open — review: [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
+| [`MIGRATION-STEP-0.md`](./MIGRATION-STEP-0.md) | Fix CI and local test execution — complete: B4 and B6 fixed 2026-10-21; `TEST_RUN_ID`, CI and LDE doc moved to [`REMAINING_TODO.md`](./REMAINING_TODO.md) — review: [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
 | [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) | `ingress_type` / `expose_*` variables, nginx "expose-none" scenario (port 443 added to Services, CoreDNS rewrites, in-cluster Ansible Job) — review: [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |
 | [`MIGRATION-STEP-2.md`](./MIGRATION-STEP-2.md) | First Gateway API implementation: console `HTTPRoute` only — review: [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md) |
 | [`MIGRATION-STEP-3.md`](./MIGRATION-STEP-3.md) | CA / peer / orderer `TLSRoute`s, 7054 / 7050 / 7051 listeners, `api_url` port changes — review: [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md) |
@@ -95,7 +95,7 @@ per-step review. The items below don't belong to a single step:
 
 | Order | Action | Unblocks |
 |---|---|---|
-| 1 | ~~Fix `PATCH_BG_PID` in `run-tests.sh`~~ and ~~run the tutorial chaincode as a service~~ (done 2026-10-21, full local run `exit=0`) — then implement `TEST_RUN_ID` stamping, run the CI, align the LDE doc | B4, B6 — actual completion of [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
+| 1 | ~~Fix `PATCH_BG_PID` in `run-tests.sh`~~ and ~~run the tutorial chaincode as a service~~ (done 2026-10-21, full local run `exit=0`); the rest of Step 0 is in [`REMAINING_TODO.md`](./REMAINING_TODO.md) | B4, B6 — [Step 0](./REVIEW-MIGRATION-PLAN-STEP-0.md) |
 | 2 | Decide the semantics of `expose_*: false` on nginx | B2 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |
 | 3 | Spikes (a) operator and (b) Envoy Gateway passthrough on 443 | B1, B3, B5 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md), [Step 2](./REVIEW-MIGRATION-PLAN-STEP-2.md), [Step 3](./REVIEW-MIGRATION-PLAN-STEP-3.md) |
 | 4 | Rewrite Step 1 around collection-owned Services | B3 — [Step 1](./REVIEW-MIGRATION-PLAN-STEP-1.md) |

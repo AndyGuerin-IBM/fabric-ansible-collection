@@ -2,7 +2,7 @@
 
 **Roadmap reference:** Pre-requisite step for [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md)  
 **Plan reference:** [`MIGRATION-PLAN.md`](./MIGRATION-PLAN.md) — §5.3, [`PRE-ANALYSIS.md`](./PRE-ANALYSIS.md) — §2.5  
-**Status:** `[ ] in progress` — B4 and B6 fixed on 2026-10-21 (branch `step0-fix`, full local run `exit=0`); `TEST_RUN_ID` stamping, the GitHub Actions run and the LDE doc are still open ([review](./REVIEW-MIGRATION-PLAN-STEP-0.md))
+**Status:** `[x] complete` — B4 and B6 fixed on 2026-10-21, full local run `exit=0`. What is left (`TEST_RUN_ID` stamping, the GitHub Actions run, the LDE doc) is in [`REMAINING_TODO.md`](./REMAINING_TODO.md)
 
 ---
 

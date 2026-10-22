@@ -57,17 +57,19 @@ chaincode as a service (CCaaS), which the peer's `ccaas_builder` installs:
 To validate with the team: the tutorial now builds an image, so the CI runner
 must be able to push to the KIND registry that `kind_with_nginx.sh` creates.
 
-Step 0 is still marked `complete` although the `TEST_RUN_ID` stamping (below)
-is not implemented.
+Step 0 is marked complete. The items below that are still open, starting
+with the `TEST_RUN_ID` stamping, are tracked in
+[`REMAINING_TODO.md`](./REMAINING_TODO.md).
 
 ---
 
 ## Implementation mistakes (fixable without changing the design) 🟠
 
 - `TEST_RUN_ID` / `SHORT_TEST_RUN_ID` stamping (sub-task 0.2) is not implemented.
-- Diverging versions: CI uses Python **3.9** while the LDE requires "exactly
-  3.10"; CI installs Fabric **2.4.7** while the LDE downloads **2.5.15** under a
-  "Fabric 2.4.7" heading.
+- Diverging versions: CI used Python **3.9** while the LDE requires "exactly
+  3.10" (**fixed 2026-10-22**: `fvtest.yml` uses 3.10, full local run with a
+  fresh 3.10 venv `exit=0`); CI installs Fabric **2.4.7** while the LDE
+  downloads **2.5.15** under a "Fabric 2.4.7" heading.
 - `fvtest.yml` only triggers on `workflow_dispatch`; Step 1 refers to running
   "on every push".
 - Sub-task 0.1 (inline playbook calling `fabric_console`) does not match the
@@ -107,6 +109,8 @@ is not implemented.
 | 1 | ~~Fix `PATCH_BG_PID` in `run-tests.sh`~~ and ~~run the tutorial chaincode as a service~~ (done 2026-10-21, full local run `exit=0`) | B4, B6 |
 | 2 | Implement `TEST_RUN_ID` stamping | Repeat and parallel runs |
 | 3 | Run `fvtest.yml` on GitHub Actions (the runner must push the chaincode image to the KIND registry) | CI baseline |
-| 4 | Align the versions and the LDE doc (Python, Fabric, `yq`, `ANSIBLE_PYTHON_INTERPRETER`, health path, `build_ignore`) | Actual completion of Step 0 |
+| 4 | Align the versions and the LDE doc (Python, Fabric, `yq`, `ANSIBLE_PYTHON_INTERPRETER`, health path, `build_ignore`) | Clean local setup |
+
+Items 2 to 4 are tracked in [`REMAINING_TODO.md`](./REMAINING_TODO.md).
 
 See the [overview](./REVIEW-MIGRATION-PLAN.md#7-recommended-order-of-action) for the full cross-step sequencing.

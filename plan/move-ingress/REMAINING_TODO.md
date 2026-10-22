@@ -20,11 +20,38 @@ with `ccaas` as default.
   `ccaas_builder`.
 - a `type: k8s` package that points to the chaincode image (name and digest).
   We still build and push an image, but the peer starts the pod.
-- the right to create the chaincode pods in the namespace.
+
+The peer is already allowed to create its chaincode pods: the Role the
+operator creates for each peer (`definitions/peer/role.yaml`) grants
+`create`, `delete`, `get`... on `pods` and `secrets` in its namespace
+(checked on a live peer).
 
 Files: `deploy_smart_contract.sh`, `deploy_chaincode_server.sh`,
 `join_network.sh` (destroy), `00-deploy-fabric-console.yml` (peer image),
 `common-vars.yml`.
+
+**TODO: check how to set up the chaincode Kubernetes builder.**
+
+- Builders to compare:
+  - `fabric-builder-k8s` (Hyperledger Labs): ships the `k8s-fabric-peer`
+    image, peer with the builder already installed;
+  - `hlfabric-k8scc` (PostFinance): builds and launches the chaincode through
+    the Kubernetes API, without the Docker socket;
+  - `externalbuilder` (kfsoftware): peer images with external builders
+    preconfigured, but for old Fabric versions (2.2, 2.3);
+  - `hlf-operator` (kfsoftware) and Hyperledger Bevel do it with their own
+    tooling (`kubectl hlf chaincode install`, `--k8s-builder`): not usable as
+    is with the Fabric Operator, but worth reading.
+- How an external builder plugs into the peer:
+  - a directory with `bin/detect`, `bin/build` and `bin/release` (optional),
+    executable: a wrong permission makes the builder fail;
+  - an entry in `chaincode.externalBuilders` of the peer's `core.yaml`
+    (`name`, `path`). The operator's `core.yaml` (`v25`) already lists
+    `k8s_builder`: check which path it expects, and how to give the peer
+    another image through the console (`versions` / images of the
+    `IBPConsole`).
+  - `detect` picks the packages it accepts from the `type` in
+    `metadata.json`..
 
 ### 2. `TEST_RUN_ID` stamping in `run-tests.sh`
 

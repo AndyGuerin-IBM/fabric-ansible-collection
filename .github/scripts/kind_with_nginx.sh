@@ -165,7 +165,7 @@ EOF
 function launch_docker_registry() {
   
   # create registry container unless it already exists
-  running="$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true)"
+  running="$(docker inspect -f '{{.State.Running}}' "${CONTAINER_REGISTRY_NAME}" 2>/dev/null || true)"
   if [ "${running}" != 'true' ]; then
     docker run  \
       --detach  \

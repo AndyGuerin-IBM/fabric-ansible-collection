@@ -1022,3 +1022,13 @@ The inconsistency: the overview now says B4 is Open, but REVIEW-MIGRATION-PLAN-S
 
 Fixing run-tests.sh (B4 and the run-ID stamping) unblocks both the Step 0 baseline and Step 1's end-to-end check. The doc items can follow in the same pass. Should I start?
 >>>
+
+---
+
+## Fix Step 0
+
+For the step 0 remove 'PATCH_BG_PID', the 'reg_name' typo in `kind_with_nginx.sh`, and the chaincode install ("docker build is disabled").
+For the chaincode, run it as a service (CCaaS): the default peer image only has `ccaas_builder`
+Update the Step 0 plan and review with what we found, and mark Step 0 complete
+Put next things to do in `REMAINING_TODO.md`.
+Also Move `fvtest.yml` to Python 3.10 to we are aligned

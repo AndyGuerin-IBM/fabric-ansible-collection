@@ -40,9 +40,9 @@ in [`SCENARIOS-MERMAID.md`](./SCENARIOS-MERMAID.md).
 
 | Scenario | In one sentence | Variables | CI leg | Diagram |
 |---|---|---|---|---|
-| **A** — everything exposed (default) | Today's behaviour. Step 1 must not change it. | none | `expose-all` | [Scenario A](./SCENARIOS-MERMAID.md#scenario-a) |
+| **A** — everything exposed, non-Kubernetes FQDNs (default) | Today's behaviour. Step 1 must not change it. | none | `expose-all` | [Scenario A](./SCENARIOS-MERMAID.md#scenario-a) |
 | **B** — nothing exposed, cluster-local HLF domain | **The Step 1 target.** Node FQDNs are Kubernetes Service FQDNs, CoreDNS is not touched, the console keeps its public name but is not served. | `hlf_network_domain: cluster.local`, every `expose_*: false` (`exposed_domain` free) | `expose-none-internal` | [Scenario B](./SCENARIOS-MERMAID.md#scenario-b) |
-| **C** — nothing exposed, previous FQDNs | Compatibility: the same names as A, reached without nginx through one CoreDNS rewrite per endpoint type. | every `expose_*: false` | `expose-none` | [Scenario C](./SCENARIOS-MERMAID.md#scenario-c) |
+| **C** — nothing exposed, non-Kubernetes FQDNs | Compatibility: node FQDNs are not Kubernetes names (the same names as A); they are reached without nginx through one CoreDNS rewrite per endpoint type. | every `expose_*: false` | `expose-none` | [Scenario C](./SCENARIOS-MERMAID.md#scenario-c) |
 
 Out of scope: **D** (nodes exposed under their own domain) is Step 3, and
 partial exposure (some components exposed, others not) has no CI leg.
@@ -58,18 +58,23 @@ Each sub-task below starts with the scenarios it touches.
 <a id="how-to-check"></a>
 ## How to implement and check Step 1
 
-**One sub-task at a time, in order.** Sub-tasks are numbered in
-implementation order (see the [sub-task map](#sub-task-map)). A
-sub-task is done when:
+**One sub-task = one PR.** Each sub-task has its  own pull
+request, which contains only that sub-task. Sub-tasks are numbered in
+implementation order (see the [sub-task map](#sub-task-map)). A sub-task is
+done, and its PR can be merged, when:
 
 1. every item of its **Todo list** is ticked;
 2. its automatic checks pass (`ansible-lint`, `yamllint`, `bash -n`, tests);
 3. a person has run its **✋ check** on the local KIND cluster and
-   ticked the sign-off line with a name and a date.
+   ticked the sign-off line with a name and a date
 
-Do not start the next sub-task before the sign-off. When a check fails, fix
-it inside the same sub-task, then rerun the **whole** check, not only the
-line that failed. Each  check gives the commands, the expected result,
+A sub-task starts once the sub-tasks in its "Needs" column are merged.
+Sub-tasks that don't need each other and don't touch the same files can be
+worked on in parallel, in separate PRs: see
+[`MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md`](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md)
+(dependencies, files changed by each sub-task, merge-conflict risk, waves).
+When a check fails, fix it inside the same sub-task, then rerun the **whole**
+check, not only the line that failed. Each  check gives the commands, the expected result,
 and, where it matters, a **negative check**: something broken on purpose that
 must make the check fail.
 
@@ -317,8 +322,6 @@ before any task that branches on `expose_*` or a domain fact):
   `roles/fabric_operator_crds/defaults/main.yml:46`.
 - [ ] Add `exposed_domain` and `hlf_network_domain` to
   `tutorial/common-vars.yml`, commented out, with their defaults.
-- [ ] Move `test.yml` / `test_case.yml` / `test_extra_vars.yml` from the
-  prototype to the collection's test tree (or a molecule scenario).
 - [ ] Run `ansible-lint` and `yamllint` on all modified and new files.
 
 **Relevant context:**
@@ -441,8 +444,9 @@ adds the tests and their CI hook.
 - Each failing case fails with the role's message, not a template error.
 
 **Todo list:**
-- [ ] Port the prototype `test.yml` (13 cases, 2026-10-16: all pass) to the
-  collection's test tree.
+- [ ] Port the prototype tests (`test.yml`, `test_case.yml`,
+  `test_extra_vars.yml`; 13 cases, 2026-10-16: all pass) to the collection's
+  test tree (or a molecule scenario).
 - [ ] Add a "network_domains rules" step to `fvtest.yml`, before
   `run-tests.sh`.
 - [ ] Add a case with the ConfigMap unreadable (a ServiceAccount without
@@ -1327,9 +1331,10 @@ node after its module call. The Ingress is kept but no longer served.
 - [ ] Wait until each Ingress shows `ingressClassName == unexposed_ingress_class`.
 - [ ] Repeat check 3 on a **peer** update before considering a `true`
   default (D4).
-- [ ] Add the neutralized case to assertion 1 of sub-task 1.10.
 
 **Relevant context:**
+- The neutralized case is checked by assertion 1 of sub-task 1.10, in that
+  PR: this one doesn't touch the assertions.
 - The class must be set on the **CR**, not the Ingress: the operator rebuilds
   the Ingress from the CR on every spec change.
 - Exposure window: between CR creation and the patch (the module blocks until
@@ -1521,11 +1526,6 @@ ends in an endpoint word. Scenario B needs no such pattern.
           kubernetes ${CLUSTER_DOMAIN} in-addr.arpa ip6.arpa { ... unchanged ... }
           ...
   ```
-- [ ] Make sure the `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
-  `CLUSTER_DOMAIN` variables are exported **before** `kind_with_nginx.sh`
-  runs in `fvtest.yml` (the matrix `env` of sub-task 1.9), because the script
-  now runs before the playbooks. They must match what `run-tests.sh` writes
-  to `common-vars.yml` (sub-task 1.3).
 - [ ] Run `bash -n .github/scripts/kind_with_nginx.sh`.
 - [ ] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
   bootstrap with `EXPOSE_*=false` and check the six blocks and the unchanged
@@ -1543,6 +1543,8 @@ ends in an endpoint word. Scenario B needs no such pattern.
 - Sub-task 1.10 assertions 3–6 verify this end to end. In scenario B
   (`HLF_NETWORK_DOMAIN == CLUSTER_DOMAIN`), assertion 6 checks plain
   kube-dns resolution instead of a rewrite.
+- In CI, the variables reach `kind_with_nginx.sh` through `fvtest.yml`,
+  changed in sub-task 1.9: this PR only changes the script.
 - This script hard-codes `CLUSTER_DOMAIN` because it writes the Corefile
   itself. The Ansible side reads it from that same Corefile
   (`network_domains`, sub-task 1.1), so both always agree.
@@ -1615,8 +1617,8 @@ cluster** using a Kubernetes Job.
 
 | Leg | Scenario | `EXPOSE_*` | `HLF_NETWORK_DOMAIN` | CoreDNS rewrites | Runner |
 |---|---|---|---|---|---|
-| `expose-all` | A (no regression) | `true` | unset (= exposed domain) | none | Actions runner (unchanged) |
-| `expose-none` | C (previous FQDNs) | `false` | unset (= exposed domain) | 6 per endpoint type | in-cluster Job |
+| `expose-all` | A (everything exposed, no regression) | `true` | unset (= exposed domain) | none | Actions runner (unchanged) |
+| `expose-none` | C (non-Kubernetes FQDNs) | `false` | unset (= exposed domain) | 6 per endpoint type | in-cluster Job |
 | `expose-none-internal` | **B (Step 1 target)** | `false` | `cluster.local` | **none** | in-cluster Job |
 
 **Expected outcomes:**
@@ -1790,6 +1792,11 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
   runner-side `run-tests.sh` invocation — this path is unchanged.
 - [ ] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
   `$GITHUB_ENV`. Keep `INGRESS_TYPE=nginx`.
+- [ ] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
+  `CLUSTER_DOMAIN` **before** `kind_with_nginx.sh`: since sub-task 1.8 the
+  script reads them to write the CoreDNS rules, before any playbook runs.
+  They must match what `run-tests.sh` writes to `common-vars.yml` (sub-task
+  1.3).
 - [ ] For `expose-none-internal`: same, plus
   `HLF_NETWORK_DOMAIN=cluster.local` and `CLUSTER_DOMAIN=cluster.local`,
   exported before `kind_with_nginx.sh` and the console deployment (the

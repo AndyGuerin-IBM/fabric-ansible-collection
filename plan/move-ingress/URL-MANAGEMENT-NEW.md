@@ -171,7 +171,7 @@ not aliased.
 
 ## 4. Scenarios
 
-| | **A. Default (today)** | **B. Step 1 target** | **C. Unexposed, previous way** | **D. Later (Step 3)** |
+| | **A. Exposed, non-Kubernetes FQDNs (default)** | **B. Step 1 target** | **C. Unexposed, non-Kubernetes FQDNs** | **D. Later (Step 3)** |
 |---|---|---|---|---|
 | `exposed_domain` | `127-0-0-1.nip.io` | `example.com` | `127-0-0-1.nip.io` | `example.com` |
 | `hlf_network_domain` | = exposed (default) | `cluster.local` (= `cluster_domain`) | = exposed (default) | `fabric.example.com` |
@@ -189,7 +189,7 @@ B is the Step 1 target. C is the current `expose-none` CI design of
 sub-task 1.8, kept as the "else" branch and as a compatibility leg. D only
 outlines Step 3.
 
-### 4.1 Scenario A: default, everything exposed (no regression)
+### 4.1 Scenario A: everything exposed, non-Kubernetes FQDNs (default, no regression)
 
 ```
    client (outside)            nginx :443 (SSL passthrough)              cluster
@@ -271,7 +271,7 @@ Node TLS SANs (`URL-MANAGEMENT-EXISTING.md` §4.2) are generated from the same
 `spec.domain`, so they match the names clients dial. No `csr_hosts` change is
 needed.
 
-### 4.3 Scenario C: nothing exposed, previous way of building FQDNs
+### 4.3 Scenario C: nothing exposed, non-Kubernetes FQDNs
 
 `hlf_network_domain` is left at its default (`exposed_domain`, here
 `127-0-0-1.nip.io`), or set to any other domain outside `cluster_domain`.

@@ -9,17 +9,28 @@ Step 0 run of 2026-10-21 ([review](./REVIEW-MIGRATION-PLAN-STEP-0.md)).
 
 Today `deploy_smart_contract.sh` always runs the chaincode as a service
 (CCaaS, `tutorial/deploy_chaincode_server.sh`). The other way is to let the
-peer start the chaincode itself with `k8s_builder`. Add a parameter to pick
-one, for example `chaincode_build_mode: ccaas | k8s_builder` in
-`tutorial/common-vars.yml` (or `CHAINCODE_BUILD_MODE` in the environment),
-with `ccaas` as default.
+peer start the chaincode itself with its `k8s_builder`. We want one parameter
+to choose between the two.
 
-`k8s_builder` needs more than a flag:
-- a peer image that ships the builder (`k8s-fabric-peer`), set through the
-  console. The default `hyperledger/fabric-peer:2.5.8` only has
-  `ccaas_builder`.
-- a `type: k8s` package that points to the chaincode image (name and digest).
-  We still build and push an image, but the peer starts the pod.
+**The parameter**
+
+| | |
+|---|---|
+| Name | `chaincode_build_mode` in `tutorial/common-vars.yml`. In CI and with `run-tests.sh`: `CHAINCODE_BUILD_MODE`, written to `common-vars.yml` like the other variables (Step 1 sub-task 1.3). |
+| Values | `ccaas` (default, today's behaviour) or `k8s_builder` |
+| Other value | `deploy_smart_contract.sh` and `deploy-console.sh` stop with an error naming the two values |
+| When it must be set | **before the console is deployed**: the peer image is chosen when the console is created, not when the chaincode is installed |
+
+**What each value does**
+
+| | `ccaas` (today) | `k8s_builder` |
+|---|---|---|
+| Who starts the chaincode | we do: a Deployment and a Service (`deploy_chaincode_server.sh`) | the peer, through its `k8s_builder` |
+| Chaincode image | built and pushed to the KIND registry | the same |
+| Package (`smart_contract_package`) | `type: ccaas`, holding the address of the chaincode server | `type: k8s`, pointing to the chaincode image (name and digest) |
+| Peer image | the console's default, `hyperledger/fabric-peer:2.5.8` (only `ccaas_builder`) | an image that ships the builder (`k8s-fabric-peer`), set in `00-deploy-fabric-console.yml` |
+| Destroy (`join_network.sh destroy`) | deletes the Deployment, the Service and the package | deletes the package; check what removes the chaincode pods |
+| CI | `fvtest.yml` as today | a later leg, once the mode works locally |
 
 The peer is already allowed to create its chaincode pods: the Role the
 operator creates for each peer (`definitions/peer/role.yaml`) grants
@@ -51,7 +62,15 @@ Files: `deploy_smart_contract.sh`, `deploy_chaincode_server.sh`,
     another image through the console (`versions` / images of the
     `IBPConsole`).
   - `detect` picks the packages it accepts from the `type` in
-    `metadata.json`..
+    `metadata.json`.
+- Notes from the review (search "HLF peer chaincode kubernetes builder"):
+  - [Fabric docs: chaincode as an external service](https://hyperledger-fabric.readthedocs.io/en/release-2.2/cc_service.html)
+  - [hlfabric-k8scc (PostFinance)](https://github.com/postfinance/hlfabric-k8scc)
+  - [externalbuilder (kfsoftware)](https://github.com/kfsoftware/externalbuilder)
+
+  ![Implementation options](./img/k8s-builder-options.png)
+
+  ![Configuration steps and common issues](./img/k8s-builder-configuration.png)
 
 ### 2. `TEST_RUN_ID` stamping in `run-tests.sh`
 

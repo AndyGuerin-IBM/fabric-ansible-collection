@@ -58,7 +58,7 @@ on 2026-10-16: both findings concern the Step 3 route tasks, not Step 1.*
   `MIGRATION-PLAN.md` §5.6 derive the route hostnames from them
   (`… | urlsplit('hostname')`), but no role or module sets them.
   → Derive them from the registered module results. Step 1 adds those
-  registers (`MIGRATION-STEP-1.md` sub-task 1.3b):
+  registers (`MIGRATION-STEP-1.md` sub-task 1.6):
   `endorsing_organization_ca.certificate_authority.api_url`, the
   `endorsing_organization_peer` / `endorsing_organization_peers` results, and
   the ordering-service result, which is a **list** (one entry per node: one

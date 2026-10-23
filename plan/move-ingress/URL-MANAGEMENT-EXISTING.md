@@ -4,7 +4,7 @@ How the URLs of every Fabric component (`api_url`, `operations_url`,
 `grpcwp_url`, `osnadmin_url`) are built, which variable controls each part,
 and where the collection consumes them. Input for hardening the domain
 variables of [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) (sub-tasks 1.1,
-1.1b, 1.3b, 1.4b) and fixing the variable-scope finding of
+1.2, 1.6, 1.8) and fixing the variable-scope finding of
 [`REVIEW-MIGRATION-PLAN-STEP-1.md`](./REVIEW-MIGRATION-PLAN-STEP-1.md).
 
 **Sources read (2026-10-16):**
@@ -173,7 +173,7 @@ athena turns the display name into the deployer id, which becomes the CR name
 `pkg/offering/base/orderer/override/orderernode.go:59`). athena names the
 display names `Ordering Service_1`, `_2`, … (`comp_formatting_lib.js:463-466`).
 
-**Consequence for assumptions S1/S2 of sub-task 1.3b:** "lowercase + remove
+**Consequence for assumptions S1/S2 of sub-task 1.6:** "lowercase + remove
 non-`[a-z0-9]`" is right for a **fresh** name. It is wrong when the name is
 already taken, when it starts with a digit, or when it exceeds 64 characters.
 The only reliable source for the CR name is the URL the console returns
@@ -274,7 +274,7 @@ These are findings to act on; the decisions belong in
 1. **`ingress_domain` must not be an independent variable.** The node FQDNs
    use the console's `networkinfo.domain`, i.e. `console_domain`. A separate
    `ingress_domain` with another value would make the CoreDNS rewrites
-   (1.4b), the cluster-local guard (1.1b) and the Service naming (1.3b) work on
+   (1.8), the cluster-local guard (1.2) and the Service naming (1.6) work on
    hostnames the operator never generates. Either drop `ingress_domain` and
    use `console_domain`, or keep it as an alias defaulting to
    `console_domain` and fail on a mismatch.
@@ -287,14 +287,14 @@ These are findings to act on; the decisions belong in
    - require it as an input variable, cross-checked against the returned
      URLs after the call.
 
-   Sub-task 1.3b needs the Services **before** the module call (the health
+   Sub-task 1.6 needs the Services **before** the module call (the health
    wait runs inside it), so a pre-call value is required; the post-call
    URLs can then double-check it.
 3. **CR names must not be re-derived.** Assumption S1 breaks on name
-   collisions, leading digits and long names (§3). Sub-task 1.3b could pass
+   collisions, leading digits and long names (§3). Sub-task 1.6 could pass
    an explicit `id` to the console (athena then uses it verbatim, §3 rule 1),
    but the collection modules do not expose it today. Otherwise, the verify
-   step of 1.3b must compare against the returned URLs and fail loudly.
+   step of 1.6 must compare against the returned URLs and fail loudly.
 4. **Variable scope.** Domain-related variables live in roles that are run
    by separate playbooks (`fabric_operator_crds`, `fabric_console`,
    `endorsing_organization`, `ordering_organization`). The derivation logic

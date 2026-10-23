@@ -16,12 +16,12 @@ yet.
 
 **Status — decided, planned:** decided on 2026-10-16 as a mix of options (a) and (b) below:
 the operator's Ingress objects stay. The console Ingress is made unserved
-(`spec.ingress.class: none`, MIGRATION-STEP-1.md sub-task 1.3a). Node
+(`spec.ingress.class: none`, MIGRATION-STEP-1.md sub-task 1.5). Node
 Ingresses can be neutralized the same way, opt-in
-(`neutralize_node_ingresses`, sub-task 1.3c, decision D4 of
+(`neutralize_node_ingresses`, sub-task 1.7, decision D4 of
 [`URL-MANAGEMENT-NEW.md`](./URL-MANAGEMENT-NEW.md)). Checked on a CA
 (URL-MANAGEMENT-NEW.md §9 checks 2, 3, 7): nginx stops serving it, a console
-update keeps it, no pod restart. Sub-task 1.6 assertion 1 now checks "not
+update keeps it, no pod restart. Sub-task 1.10 assertion 1 now checks "not
 served by nginx" instead of "no Ingress object". Remaining: check 3 on a
 peer before a `true` default.
 
@@ -56,7 +56,7 @@ creation, which is exactly why no Step 1 sub-task can "neutralise" these
 objects from the Ansible side alone (confirms B2's impact below).
 
 **Impact.** The goal "nothing is exposed through the NGINX ingress controller"
-cannot be met, and assertion 1 of sub-task 1.6 ("No external Ingress objects")
+cannot be met, and assertion 1 of sub-task 1.10 ("No external Ingress objects")
 will always fail.
 
 **Decision required before coding Step 1:** see [§ Decision required](#decision-required-b2) below.
@@ -64,12 +64,12 @@ will always fail.
 ### B3 — A Service port 443 cannot serve several FQDNs
 
 **Status — planned:** the proposal below was adopted: MIGRATION-STEP-1.md sub-task
-1.3b creates one collection-owned ClusterIP Service per endpoint, and never
+1.6 creates one collection-owned ClusterIP Service per endpoint, and never
 touches the operator's Services. The "bonus" became decision D1: with
 `hlf_network_domain == cluster_domain`, node FQDNs are Service FQDNs and no
 CoreDNS rewrite is needed. Checked on a CA on 2026-10-16 (URL-MANAGEMENT-NEW.md
 §9 check 1, strict TLS passes). Remaining: the scenario B end-to-end run
-(check 5, sub-task 1.5).
+(check 5, sub-task 1.9).
 
 **Finding.** Each component exposes several hostnames on `:443`:
 
@@ -79,12 +79,12 @@ CoreDNS rewrite is needed. Checked on a CA on 2026-10-16 (URL-MANAGEMENT-NEW.md
 | Orderer | `-orderer`, `-admin`, `-operations`, `-grpcweb` | 7050, 9443, 8443, 7443 |
 | CA | `-ca`, `-operations` | 7054, 9443 |
 
-A Service port maps to **a single** `targetPort`. Sub-task 1.4b rewrites
+A Service port maps to **a single** `targetPort`. Sub-task 1.8 rewrites
 `-operations` to the same Service as `-peer`: `/healthz` lands on gRPC port 7051
 and fails. In addition, patching operator-owned Services may be reverted on the
 next reconciliation (to be verified in `fabric-operator`).
 
-**Impact.** The "Strategic Merge Patch" approach of sub-task 1.3b cannot work
+**Impact.** The "Strategic Merge Patch" approach of sub-task 1.6 cannot work
 for the operations / admin / grpcweb endpoints.
 
 **Proposal:** the collection creates **its own ClusterIP Services**, one per
@@ -98,7 +98,7 @@ FQDN:
 
 **Bonus:** with `ingress_domain: <ns>.svc.<cluster_domain>`, the FQDNs generated
 by the operator become real Kubernetes Service names → **no CoreDNS rewrite
-needed at all** (sub-task 1.4b and most of sub-task 1.1 go away). Constraint: a
+needed at all** (sub-task 1.8 and most of sub-task 1.1 go away). Constraint: a
 DNS label is limited to 63 characters.
 
 ---
@@ -129,14 +129,14 @@ KIND and `ansible-lint`.
   `ingress_domain_is_cluster_local` is used in the organization roles without
   ever being defined there.
   → Defaults in each role, or a small shared role called via `include_role`.
-- **Cluster-local `ingress_domain` (sub-task 1.1b):** `<x>.svc.cluster.local` is
+- **Cluster-local `ingress_domain` (sub-task 1.2):** `<x>.svc.cluster.local` is
   not a Service FQDN (the form is `<svc>.<ns>.svc.<zone>`). It only works with
   the B3 proposal. Optional feature, not blocking.
 
 ### Organization roles
 
 **Status — planned:** the guarded Kubernetes dependency and the CR names
-are covered by MIGRATION-STEP-1.md sub-task 1.3b: Kubernetes tasks only for
+are covered by MIGRATION-STEP-1.md sub-task 1.6: Kubernetes tasks only for
 unexposed components, names stripped of non-`[a-z0-9]` and checked against
 the returned URLs, `<name>node<i>` for ordering nodes. The two Step 3 items
 moved to the Step 3 review. Remaining: check multi-peer names on a run.
@@ -155,7 +155,7 @@ moved to the Step 3 review. Remaining: check multi-peer names on a run.
 
 ### Console
 
-**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.3 and 1.3a. Readiness
+**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.4 and 1.5. Readiness
 through the console Deployment when unexposed, HTTPS on port 3000 (checked),
 cluster domain from `network_domains`, `/ak/api/v3/health` with credentials,
 and the tutorial playbook that CI runs gets the same changes. Remaining:
@@ -167,15 +167,15 @@ align the health path in MIGRATION-STEP-0.md and MIGRATION-PREREQ-LDE.md
   → Check the Deployment readiness via `k8s_info`.
 - Hardcoded `cluster.local`; the `http :3000` protocol / port needs checking;
   inconsistent health path (`/health` in Step 0, `/ak/api/v3/health` in
-  sub-task 1.6).
+  sub-task 1.10).
 - [`roles/fabric_console/tasks/k8s/create.yml`](../../roles/fabric_console/tasks/k8s/create.yml)
   does not wait for any Ingress: there is nothing to "split". CI does not use
-  this role (`00-deploy-fabric-console.yml`), so sub-task 1.3 would not be
+  this role (`00-deploy-fabric-console.yml`), so sub-task 1.4 would not be
   tested there.
 
 ### Expose-none CI
 
-**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.4b, 1.5 and 1.6.
+**Status — planned:** MIGRATION-STEP-1.md sub-tasks 1.8, 1.9 and 1.10.
 Assertions find endpoints from labelled Services; rewrites are written at
 cluster bootstrap and keep the existing Corefile; checks go through `:443`
 with `rc=0; cmd || rc=$?`. The Job takes the tutorial from the runner image,
@@ -201,14 +201,14 @@ Step 0 `run-tests.sh` fix.
 ## Documentation inconsistencies 🟡
 
 **Status — handled:** RBAC moved to MIGRATION-STEP-2.md sub-task 2.0; the
-"five-task block" text is gone (sub-task 1.3 rewritten); the `apiVersion`
+"five-task block" text is gone (sub-task 1.4 rewritten); the `apiVersion`
 item was a real bug: the CRDs serve only `v1beta1`, and a `v1alpha2` read
 silently finds nothing (checked on KIND). The fix is in
-MIGRATION-STEP-1.md sub-task 1.3a.
+MIGRATION-STEP-1.md sub-task 1.5.
 
-- RBAC (sub-task 1.2 / W4): routes are created by Ansible tasks, not by the
+- RBAC (former sub-task 1.2, now MIGRATION-STEP-2.md sub-task 2.0 / W4): routes are created by Ansible tasks, not by the
   operator → extending the operator's ClusterRole is unnecessary.
-- Sub-task 1.3 announces a "five-task block" but lists six tasks.
+- Sub-task 1.4 announces a "five-task block" but lists six tasks.
 - `IBPConsole` is queried as `v1alpha2` in the roles but created as `v1beta1`
   in `00-deploy-fabric-console.yml`.
 
@@ -240,7 +240,7 @@ security guarantee.
 |---|---|---|
 | 2 | ~~Decide the semantics of `expose_*: false` on nginx~~ (done 2026-10-16, see B2) | B2 |
 | 3 | ~~Spike (a): `fabric-operator` reconciliation behaviour~~ (done 2026-10-16 on KIND, URL-MANAGEMENT-NEW.md §9; the Ingress-class route replaced patching Services or deleting Ingresses) | B2, B3 |
-| 4 | ~~Rewrite Step 1 around collection-owned Services~~ (done, MIGRATION-STEP-1.md sub-task 1.3b) | B3 |
+| 4 | ~~Rewrite Step 1 around collection-owned Services~~ (done, MIGRATION-STEP-1.md sub-task 1.6) | B3 |
 | — | **Next:** implement Step 1; first, the Step 0 `run-tests.sh` fix (still at `run-tests.sh:42`), which blocks the in-cluster scenario B run | check 5 |
 
 See the [overview](./REVIEW-MIGRATION-PLAN.md#7-recommended-order-of-action) for the full cross-step sequencing.

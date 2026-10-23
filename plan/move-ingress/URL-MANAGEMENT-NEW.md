@@ -5,14 +5,14 @@
 (how URLs are built today) and
 [`REVIEW-MIGRATION-PLAN-STEP-1.md`](./REVIEW-MIGRATION-PLAN-STEP-1.md)
 ("Variable scope", B2).
-**Feeds:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) sub-tasks 1.1, 1.1b,
-1.3, 1.3b, 1.4b, 1.5.
+**Feeds:** [`MIGRATION-STEP-1.md`](./MIGRATION-STEP-1.md) sub-tasks 1.1, 1.2,
+1.4, 1.6, 1.8, 1.9.
 
 Sources: same revisions as `URL-MANAGEMENT-EXISTING.md`
 (collection `9490cc9`, fabric-operations-console `2ec7e1c`, fabric-operator
 `6ea612b`). The key mechanisms were checked on a local KIND cluster on
 2026-10-16 (§9): 6 of 7 checks pass, the end-to-end scenario B run waits for
-sub-task 1.5.
+sub-task 1.9.
 
 ---
 
@@ -90,10 +90,10 @@ collection chooses `spec.domain` (fact `hlf_node_domain`) from
 | Case | `hlf_node_domain` (= `spec.domain`) | Node FQDN | CoreDNS rewrite when unexposed |
 |---|---|---|---|
 | **Cluster-local**: `hlf_network_domain == cluster_domain` | `<namespace>.svc.<cluster_domain>` | `<service>.<namespace>.svc.<cluster_domain>`, a real Service FQDN | **none**: kube-dns answers it |
-| **Otherwise** (default): previous way | `hlf_network_domain` | `<ns>-<cr>-<endpoint>.<hlf_network_domain>` (as today) | one rule per endpoint type (sub-task 1.4b) |
+| **Otherwise** (default): previous way | `hlf_network_domain` | `<ns>-<cr>-<endpoint>.<hlf_network_domain>` (as today) | one rule per endpoint type (sub-task 1.8) |
 
 In the cluster-local case, `<service>` is exactly the name of the
-per-endpoint Service created by sub-task 1.3b:
+per-endpoint Service created by sub-task 1.6:
 
 ```
 default-org1peer-operations . default . svc . cluster.local
@@ -116,7 +116,7 @@ and when it is `true`, no CoreDNS rewrite is needed.
 | `exposed_domain` | Domain users see. **Rename of `ingress_domain`.** Used to build the console URL even when the console is not exposed. | `IBPConsole.spec.networkinfo.domain`; console URL `https://<ns>-<console_name>-console.<exposed_domain>`; console TLS SAN | `console_domain` (legacy name, see §3.3) |
 | `hlf_network_domain` | Domain of the HLF network nodes. Either `cluster_domain` (cluster-local, Service-shaped FQDNs) or any other domain (flat FQDNs, previous way). | `hlf_node_domain` → `IBPConsole.spec.deployer.domain` → node CRs `spec.domain` | `exposed_domain` (no behaviour change) |
 | `cluster_domain` | Kubernetes cluster DNS zone. | `hlf_network_domain_is_cluster_local`; CoreDNS rewrite targets; in-cluster Service FQDNs | `""`, resolved from the `kube-system/coredns` ConfigMap, cross-checked when set (sub-task 1.1) |
-| `expose_console`, `expose_ca`, `expose_peer`, `expose_orderer` | Whether a component is reachable from outside the cluster. | console Ingress class (§5.2); per-endpoint Services (1.3b); CoreDNS rewrites (1.4b) | `true` |
+| `expose_console`, `expose_ca`, `expose_peer`, `expose_orderer` | Whether a component is reachable from outside the cluster. | console Ingress class (§5.2); per-endpoint Services (1.6); CoreDNS rewrites (1.8) | `true` |
 | `unexposed_ingress_class` | Ingress class no controller serves, set on the Ingress of an unexposed component (D3). | console `spec.ingress.class` (§5.2); node `spec.ingress.class` when neutralized (§5.4) | `none` |
 | `neutralize_node_ingresses` | Also set `unexposed_ingress_class` on the CR of every unexposed CA, peer and orderer node (D4). | §5.4 | `false` |
 
@@ -171,7 +171,7 @@ not aliased.
 
 ## 4. Scenarios
 
-| | **A. Default (today)** | **B. Step 1 target** | **C. Unexposed, previous way** | **D. Later (Step 3)** |
+| | **A. Exposed, non-Kubernetes FQDNs (default)** | **B. Step 1 target** | **C. Unexposed, non-Kubernetes FQDNs** | **D. Later (Step 3)** |
 |---|---|---|---|---|
 | `exposed_domain` | `127-0-0-1.nip.io` | `example.com` | `127-0-0-1.nip.io` | `example.com` |
 | `hlf_network_domain` | = exposed (default) | `cluster.local` (= `cluster_domain`) | = exposed (default) | `fabric.example.com` |
@@ -181,15 +181,15 @@ not aliased.
 | `expose_console` | `true` | `false` | `false` | `true` |
 | `expose_ca/peer/orderer` | `true` | `false` | `false` | `true` |
 | Console Ingress class | `nginx` | `none` (unserved) | `none` | `nginx` / gateway route |
-| Per-endpoint Services (1.3b) | no | yes | yes | no |
-| CoreDNS endpoint rewrites (1.4b) | no | **no** | yes (per endpoint type) | no |
-| Where org playbooks run | anywhere | in-cluster (1.5) | in-cluster (1.5) | anywhere |
+| Per-endpoint Services (1.6) | no | yes | yes | no |
+| CoreDNS endpoint rewrites (1.8) | no | **no** | yes (per endpoint type) | no |
+| Where org playbooks run | anywhere | in-cluster (1.9) | in-cluster (1.9) | anywhere |
 
 B is the Step 1 target. C is the current `expose-none` CI design of
-sub-task 1.4b, kept as the "else" branch and as a compatibility leg. D only
+sub-task 1.8, kept as the "else" branch and as a compatibility leg. D only
 outlines Step 3.
 
-### 4.1 Scenario A: default, everything exposed (no regression)
+### 4.1 Scenario A: everything exposed, non-Kubernetes FQDNs (default, no regression)
 
 ```
    client (outside)            nginx :443 (SSL passthrough)              cluster
@@ -271,12 +271,12 @@ Node TLS SANs (`URL-MANAGEMENT-EXISTING.md` §4.2) are generated from the same
 `spec.domain`, so they match the names clients dial. No `csr_hosts` change is
 needed.
 
-### 4.3 Scenario C: nothing exposed, previous way of building FQDNs
+### 4.3 Scenario C: nothing exposed, non-Kubernetes FQDNs
 
 `hlf_network_domain` is left at its default (`exposed_domain`, here
 `127-0-0-1.nip.io`), or set to any other domain outside `cluster_domain`.
 The FQDNs keep the flat form, which matches no Service name, so the CoreDNS
-rules of sub-task 1.4b are needed: **one per endpoint type**, keyed on
+rules of sub-task 1.8 are needed: **one per endpoint type**, keyed on
 `hlf_network_domain`:
 
 ```
@@ -294,8 +294,8 @@ default-org1peer-operations.default.svc.cluster.local → Service → :9443
 ```
 
 These rules depend on the CR-name pattern `[a-z0-9]+` (assumption S1 of
-1.3b) and only work when CA, peer and orderer are **all** unexposed
-(sub-task 1.3b note on partial exposure). Scenario C stays useful as a
+1.6) and only work when CA, peer and orderer are **all** unexposed
+(sub-task 1.6 note on partial exposure). Scenario C stays useful as a
 compatibility test: the same deployment as A, without nginx in the path.
 
 ### 4.4 Scenario D: later, nodes exposed (Step 3, outline only)
@@ -325,7 +325,7 @@ chosen at first deployment. Out of scope for Step 1.
                          one rewrite per endpoint type
                          <ns>-<cr>-<ep>.<hlf_network_domain>
                            → <ns>-<cr>-<ep>.<ns>.svc.<cluster_domain>
-                         (scenario C, sub-task 1.4b)
+                         (scenario C, sub-task 1.8)
 ```
 
 ---
@@ -518,7 +518,7 @@ until the Ingress shows `ingressClassName: none`.
 ```
  before:  outside ──SNI default-org1peer-*──► nginx :443 ──► peer   (reachable)
  after:   outside ──SNI default-org1peer-*──► nginx :443 ──► 404    (not served)
- always:  in-cluster ──► Service default-org1peer-* ──► peer        (1.3b, unchanged)
+ always:  in-cluster ──► Service default-org1peer-* ──► peer        (1.6, unchanged)
 ```
 
 Per component: `expose_peer: false` with `expose_ca: true` neutralizes
@@ -584,7 +584,7 @@ roles/network_domains/
             └──────▲──────────────────▲─────────────────────▲─────────────────────┘
        include_role│     include_role │        include_role │ (+ tasks_from: verify_urls)
  fabric_console /  │  fabric_operator │  endorsing_organization /
- hlfsupport_console│  _crds (CoreDNS) │  ordering_organization (1.3b Services)
+ hlfsupport_console│  _crds (CoreDNS) │  ordering_organization (1.6 Services)
 ```
 
 Core of `tasks/main.yml` (after normalisation, the `console_domain` alias and
@@ -634,7 +634,7 @@ tutorial (`common-vars.yml`). So `hlf_network_domain` (and `exposed_domain`)
 go into `common-vars.yml`, read by every playbook. To protect against a
 vars file that does not match the console actually deployed:
 
-1. **Before the module call** (needed by 1.3b, the health wait runs inside
+1. **Before the module call** (needed by 1.6, the health wait runs inside
    the module): use `hlf_node_domain` computed from the vars.
 2. **After the module call** (V5): check the domain of the returned URLs:
 
@@ -677,10 +677,10 @@ namespace. Kept as a later option.
 | C5 | `roles/fabric_console/tasks/k8s/create.yml:59` (+ hlfsupport) | print `console_url`; when not exposed, print the notice of §5.1 | same message |
 | C6 | `tutorial/00-deploy-fabric-console.yml` | same as C2 on the inline CR; keep `hlf_console_domain` as input of `exposed_domain` | unchanged |
 | C7 | `tutorial/common-vars.yml` | add `exposed_domain`, `hlf_network_domain` (commented, default = exposed) | none |
-| C8 | `roles/endorsing_organization`, `roles/ordering_organization` | `include_role: network_domains`; 1.3b uses `hlf_node_domain`; V5 after each module call; node Ingress neutralization when `neutralize_node_ingresses` (§5.4) | V5 only (an assert that holds today) |
+| C8 | `roles/endorsing_organization`, `roles/ordering_organization` | `include_role: network_domains`; 1.6 uses `hlf_node_domain`; V5 after each module call; node Ingress neutralization when `neutralize_node_ingresses` (§5.4) | V5 only (an assert that holds today) |
 | C9 | `roles/fabric_operator_crds/defaults/main.yml` | remove unused `ingress_domain` | none |
-| C10 | `.github/scripts/kind_with_nginx.sh` | 1.4b follows §4.5: rewrites keyed on `HLF_NETWORK_DOMAIN` (default `INGRESS_DOMAIN`), skipped when it equals `CLUSTER_DOMAIN` | unchanged (`expose-all`) |
-| C11 | docs | `docs/source/roles/fabric-console.rst` (new variables, `console_domain` deprecation), the two Step 1 tutorials (1.7, 1.8) | — |
+| C10 | `.github/scripts/kind_with_nginx.sh` | 1.8 follows §4.5: rewrites keyed on `HLF_NETWORK_DOMAIN` (default `INGRESS_DOMAIN`), skipped when it equals `CLUSTER_DOMAIN` | unchanged (`expose-all`) |
+| C11 | docs | `docs/source/roles/fabric-console.rst` (new variables, `console_domain` deprecation), the two Step 1 tutorials (1.11, 1.12) | — |
 
 No module (`plugins/`) changes: the modules keep consuming the URLs the
 console returns.
@@ -693,21 +693,22 @@ None. The proposal only uses fields that already exist:
 
 ### 7.3 Impact on `MIGRATION-STEP-1.md`
 
-**Applied on 2026-10-16.** Sub-tasks 1.1 and 1.1b were rewritten around a
+**Applied on 2026-10-16.** Sub-tasks 1.1 and 1.2 were rewritten around a
 prototype `network_domains` role
 ([`.url_management_new_checks/network_domains/`](./.url_management_new_checks/network_domains/),
-13/13 test cases pass on KIND); 1.3a (console CR) and 1.3c (D4) were added;
-1.2–1.8 and the acceptance criteria were updated as listed below.
+13/13 test cases pass on KIND); 1.5 (console CR) and 1.7 (D4) were added;
+the other sub-tasks and the acceptance criteria were updated as listed
+below (sub-task numbers as renumbered on 2026-10-21).
 
 | Sub-task | Update |
 |---|---|
 | 1.1 | Variables of §3, moved to `network_domains`; `ingress_domain` → `exposed_domain`; add `hlf_network_domain` and the derived `hlf_node_domain`; `cluster_domain` resolution unchanged. |
-| 1.1b | `ingress_domain_is_cluster_local` → `hlf_network_domain_is_cluster_local` = `hlf_network_domain == cluster_domain`; the old "only `<ns>.svc.<cluster_domain>` is supported" guard becomes V2 (set `cluster_domain`, the role adds `<ns>.svc.`); V3; `expose_console` no longer conflicts with a cluster-local HLF domain. |
-| 1.3 | `expose_console: false` = Ingress class `none` + notice with `console_url`; in-cluster health check through the console Service. The console serves **HTTPS** on 3000 (athena terminates TLS, §5.3): the plan's `http://<console>.<ns>.svc.cluster.local:3000` URLs (1.3, 1.5, 1.6, 1.8) must become `https://`. |
-| 1.3b | FQDNs use `hlf_node_domain`; add V5. |
-| 1.4b | Decision tree of §4.5; rules keyed on `hlf_network_domain` instead of `ingress_domain`. |
-| 1.5 | New `expose-none-internal` CI leg (scenario B) next to the existing `expose-none` (scenario C). |
-| 1.6 | Assertion 1 becomes: console Ingress class is not `nginx`; node Ingress hosts are under `hlf_node_domain`. Assertion 6 is skipped in scenario B (no rewrite). |
+| 1.2 | `ingress_domain_is_cluster_local` → `hlf_network_domain_is_cluster_local` = `hlf_network_domain == cluster_domain`; the old "only `<ns>.svc.<cluster_domain>` is supported" guard becomes V2 (set `cluster_domain`, the role adds `<ns>.svc.`); V3; `expose_console` no longer conflicts with a cluster-local HLF domain. |
+| 1.4 | `expose_console: false` = Ingress class `none` + notice with `console_url`; in-cluster health check through the console Service. The console serves **HTTPS** on 3000 (athena terminates TLS, §5.3): the plan's `http://<console>.<ns>.svc.cluster.local:3000` URLs (1.4, 1.9, 1.10, 1.12) must become `https://`. |
+| 1.6 | FQDNs use `hlf_node_domain`; add V5. |
+| 1.8 | Decision tree of §4.5; rules keyed on `hlf_network_domain` instead of `ingress_domain`. |
+| 1.9 | New `expose-none-internal` CI leg (scenario B) next to the existing `expose-none` (scenario C). |
+| 1.10 | Assertion 1 becomes: console Ingress class is not `nginx`; node Ingress hosts are under `hlf_node_domain`. Assertion 6 is skipped in scenario B (no rewrite). |
 
 ---
 
@@ -748,7 +749,7 @@ logs: [`.url_management_new_checks/`](./.url_management_new_checks/)
 | 2 | nginx ignores an Ingress with class `none` | set `IBPConsole.spec.ingress.class: none`, probe the console URL through nginx; then set it back to `nginx` | **Pass.** The operator updated the Ingress (`ingressClassName` and annotation `none`). nginx: `removing ingress because of unknown ingressclass`; the console URL went from HTTP 200 (console cert) to 404 (nginx fake cert). The in-cluster Service still answered 200. Back to `nginx`: 200 again. No dummy `IngressClass` needed. |
 | 3 | a console update does not overwrite `spec.ingress` of a node CR | with `IBPCA.spec.ingress.class: none`, update the CA through the module (`resources.ca.requests` 100m/200M → 110m/210M) | **Pass.** The new resources reached the CR; `spec.ingress.class` stayed `none`, the Ingress stayed unserved (404 through nginx). The update rolls out a new CA pod because the resources changed, as expected. |
 | 4 | athena self-signed SAN = console host of `exposed_domain` | `openssl s_client` through nginx (SNI = console host) and on the in-cluster Service `hlf-console:3000` | **Pass.** Same certificate both ways: `CN = SAN = default-hlf-console-console.127-0-0-1.nip.io` (O=`ibp2-auto-gen`, valid 2 years), stored in `/certs` on the console PVC. See finding F2 for the in-cluster name. |
-| 5 | scenario B end to end: CA, peer, orderer created and joined, playbooks in-cluster, **no** CoreDNS change | CI leg `expose-none-internal` | **Not run.** Needs the in-cluster Ansible runner of sub-task 1.5: from the laptop, the module health waits can't resolve cluster-local names (finding F4). Checks 1 and 6 cover the domain and URL parts. |
+| 5 | scenario B end to end: CA, peer, orderer created and joined, playbooks in-cluster, **no** CoreDNS change | CI leg `expose-none-internal` | **Not run.** Needs the in-cluster Ansible runner of sub-task 1.9: from the laptop, the module health waits can't resolve cluster-local names (finding F4). Checks 1 and 6 cover the domain and URL parts. |
 | 6 | V5 on every URL shape | Ansible test on the real CA URLs plus samples | **Pass**, 10/10 cases: CA `https`, peer `grpcs`, orderer admin, empty `osnadmin_url` (skipped), wrong domain, wrong namespace, legacy mode, suffix trap (`x127-0-0-1.nip.io`). It also confirms V5 must compare with `hlf_node_domain`: comparing with `hlf_network_domain` (`cluster.local`) would accept a URL from another namespace. |
 | 7 | patching `spec.ingress.class` on a node CR does not restart the node pod | note pod UID, `restartCount`, Deployment generation; patch `IBPCA.spec.ingress.class: none`; wait 30 s; compare | **Pass.** Same pod UID, 0 restarts, Deployment generation and revision unchanged. The Ingress switched to `none` in about 4 s; nginx then returned 404 for the CA SNI (`/cainfo` was 200 before). |
 
@@ -759,11 +760,11 @@ logs: [`.url_management_new_checks/`](./.url_management_new_checks/)
 | F1 | The deployer reads `settings.yaml` **only at startup**. After patching `spec.deployer.domain`, the operator updated the `hlf-console-deployer` ConfigMap and the mounted file within ~10 s, but a CA created next still got the old domain. After `kubectl rollout restart deploy/hlf-console`, the new domain was used. | Render `spec.deployer.domain` when the console is **created** (C2, C6), as proposed. Changing `hlf_network_domain` on an existing console needs a console restart and only affects nodes created afterwards; existing nodes keep their domain (§4.4). The console role should restart the console when it changes `spec.deployer.domain` on an existing CR, or refuse the change. |
 | F2 | The console certificate only names `<ns>-<console>-console.<exposed_domain>`, not `hlf-console.<ns>.svc.<cluster_domain>`. | `console_incluster_url` works only without hostname verification. The collection never verifies (`validate_certs=False`), so it is not affected; strict in-cluster clients need `console_tls_secret` with the in-cluster name as an extra SAN. Document it in §5.3. |
 | F3 | The CA meant to be `Check1 CA` was stored as `Check1`, and a second `certificate_authority` call with `name: Check1 CA` did not find it (HTTP 400 when it then tried to create a new CA). | **Closed (2026-10-16): test-harness error.** The playbook was run with `-e ca_display_name="Check1 CA"`; the shell passes `ca_display_name=Check1 CA`, and Ansible's key=value parser keeps only `Check1` (reproduced: that form gives `Check1`, `-e '{"ca_display_name":"Check1 CA"}'` gives `Check1 CA`). The console stored exactly what it received. No impact on the design. |
-| F4 | From the laptop, the module health wait fails on `nodename nor servname provided` for cluster-local FQDNs. | Expected; confirms that scenario B playbooks must run in-cluster (sub-task 1.5). |
+| F4 | From the laptop, the module health wait fails on `nodename nor servname provided` for cluster-local FQDNs. | Expected; confirms that scenario B playbooks must run in-cluster (sub-task 1.9). |
 
 D4 can move to "on by default for unexposed components" for the CA, as
 checks 2, 3 and 7 passed on a CA. The peer and orderer CRs use the same
-Ingress manager; repeat check 3 on a peer update when sub-task 1.5 can run
+Ingress manager; repeat check 3 on a peer update when sub-task 1.9 can run
 scenario B.
 
 ---

@@ -42,7 +42,7 @@ ansible-playbook -i localhost, -c local $C/playbooks/check6-v5.yml
 | `playbooks/delete-ca.yml` | deletes the CA through the module (cleanup) |
 | `playbooks/check6-v5.yml` | V5 assertion on 10 URL cases (check 6) |
 | `playbooks/00-deploy-console-check.yml` | `tutorial/00-deploy-fabric-console.yml` + `spec.deployer.domain` (`-e check_deployer_domain=…`); prepared, not used: the console was patched instead. Run it from `tutorial/` (it reads `common-vars.yml`). |
-| `manifests/check1-per-endpoint-services.yml` | the two per-endpoint Services of sub-task 1.3b for the CA |
+| `manifests/check1-per-endpoint-services.yml` | the two per-endpoint Services of sub-task 1.6 for the CA |
 | `logs/kind.log`, `logs/deploy-console.log` | cluster and console bootstrap |
 | `logs/check1-ca.log` | CA creation (health wait fails from the laptop, F4) |
 | `results/c7-before.txt`, `results/c7-after.txt` | CA pod UID / restarts / Deployment generation / Ingress class around the patch (check 7) |
@@ -61,12 +61,12 @@ cd plan/move-ingress/.url_management_new_checks/network_domains
 ANSIBLE_ROLES_PATH=$PWD/roles ansible-playbook -i localhost, -c local test.yml
 ```
 
-## `job/` — in-cluster runner prototype (MIGRATION-STEP-1 sub-task 1.5)
+## `job/` — in-cluster runner prototype (MIGRATION-STEP-1 sub-task 1.9)
 
 | Path | Content |
 |---|---|
 | `Dockerfile` | runner image, on top of the repository's collection image (`docker build -t fabric-ansible-collection:ci .`) |
-| `rbac.yml`, `job.yml` | ServiceAccount / Roles and the Job, as in sub-task 1.5 (`kubectl apply --dry-run=server` passes) |
+| `rbac.yml`, `job.yml` | ServiceAccount / Roles and the Job, as in sub-task 1.9 (`kubectl apply --dry-run=server` passes) |
 | `probe.yml` | playbook run in a pod with the `ansible-runner` ServiceAccount: reads `kube-system/coredns`, calls `console_incluster_url` (both OK) |
 | `runner-build.log` | runner image build |
 

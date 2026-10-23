@@ -38,8 +38,6 @@ trap cleanup EXIT
 
 ./build_network.sh build
 
-# Ensure the background patcher has exited before continuing
-wait "${PATCH_BG_PID}" || true
 ./join_network.sh join
 ./deploy_smart_contract.sh
 

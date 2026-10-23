@@ -103,7 +103,7 @@ source _cfg/console-env.sh              # API_ENDPOINT, API_KEY, API_SECRET: nev
 NS=default
 DOMAIN_A="$(sh .github/scripts/get-host-ip.sh | tr -s '.' '-').nip.io"    # e.g. 127-0-0-1.nip.io
 SEL=app.kubernetes.io/managed-by=fabric-ansible-collection                # Services of sub-task 1.6
-
+BASE=origin/move-ingress-plan  #changer si besoin la branche target
 # Run a command in a throwaway pod: in-cluster DNS, Services, no nginx
 incluster() {
   kubectl run "chk-$RANDOM" -n "$NS" --image=curlimages/curl:8.10.1 \
@@ -409,7 +409,14 @@ cluster only when it has to, and stops on a bad combination.
    - step 5 plus `-e cluster_domain=corp.internal`: mismatch, naming both
      values.
 8. **Regression run**: exit 0.
-
+9. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.1 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   No other sub-task runs in wave 1, so a file that is not listed
+   conflicts with nothing: add it to the 1.1 row of the table.
 
 
 ---
@@ -478,7 +485,19 @@ broken rule.
    grep -n -B2 -A4 'network_domains rules' .github/workflows/fvtest.yml
    ```
    Expected: the step runs before `run-tests.sh`.
-
+4. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.2 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 2: 1.3, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.2 must be merged before
+   or after that sub-task (for example 1.3), not at the same time.
+   In both cases, add the file to the 1.2 row of the table.
 
 
 ---
@@ -579,7 +598,19 @@ Every later check relies on this sub-task.
    peers. Then **Destroy**: exit 0, no node left.
 6. If Step 0's `TEST_RUN_ID` stamping is in: with `TEST_RUN_ID=check13` set,
    step 2 stamps the names with it (`grep -l check13 tutorial/*-vars.yml`).
-
+7. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.3 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 2: 1.2, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.3 must be merged before
+   or after that sub-task (for example 1.2), not at the same time.
+   In both cases, add the file to the 1.3 row of the table.
 
 
 ---
@@ -673,7 +704,19 @@ how to reach it; the default path is unchanged.
    review its diff instead. The three Ingress tasks carry
    `when: expose_console | bool`.
 7. Restore: `.github/scripts/deploy-console.sh`.
-
+8. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.4 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 3: 1.6, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.4 must be merged before
+   or after that sub-task (for example 1.6), not at the same time.
+   In both cases, add the file to the 1.4 row of the table.
 
 
 ---
@@ -831,7 +874,19 @@ domain change restarts the console with a warning.
 7. Back to A: **Fresh console**, then step 2's `diff` is empty again (no
    `deployer` or `ingress` field left behind).
 8. **Regression run**: exit 0.
-
+9. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.5 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 3 (it may last into wave 4): 1.6, 1.7, 1.8, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.5 must be merged before
+   or after that sub-task (for example 1.6), not at the same time.
+   In both cases, add the file to the 1.5 row of the table.
 
 
 ---
@@ -1289,7 +1344,19 @@ Service FQDNs: the names scenario B uses.
    removed the Services.
 9. Scenario A creates nothing: **Regression run** with `KEEP_NETWORK=true`,
    then `kubectl get svc -n "$NS" -l "$SEL"` finds nothing. **Destroy**.
-
+10. **Changed files vs the merge-conflict analysis.**
+    ```bash
+    git fetch origin && git diff --name-only "$BASE"...HEAD
+    ```
+    Expected: only the files of the 1.6 row of the
+    [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+    If a file is not listed, check that it is not changed by the
+    sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 3: 1.4, 1.5, 1.11.
+    Look at their row of the table and at their open PR
+    (`gh pr diff <PR number> --name-only`). If one of them changes it,
+    raise a warning in the PR description: 1.6 must be merged before
+    or after that sub-task (for example 1.4), not at the same time.
+    In both cases, add the file to the 1.6 row of the table.
 
 
 ---
@@ -1387,7 +1454,19 @@ neutralization is in  check 1.9.
    `restarts=0`.
 6. Clean up: `(cd tutorial && ansible-playbook 99-delete-ordering-organization-components.yml)`,
    then restore the vars files.
-
+7. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.7 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 4: 1.8, 1.5, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.7 must be merged before
+   or after that sub-task (for example 1.8), not at the same time.
+   In both cases, add the file to the 1.7 row of the table.
 
 
 ---
@@ -1594,7 +1673,19 @@ still goes to nginx.
    nginx ClusterIP; `/healthz` returns `{"status":"OK"}` through the
    original name.
 7. **Destroy**.
-
+8. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.8 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 4: 1.7, 1.5, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.8 must be merged before
+   or after that sub-task (for example 1.7), not at the same time.
+   In both cases, add the file to the 1.8 row of the table.
 
 
 ---
@@ -1918,7 +2009,19 @@ Steps 1 to 7 run locally, before anything is pushed.
    Expected: three jobs, `FV test (nginx / expose-all)`,
    `FV test (nginx / expose-none)` and `FV test (nginx / expose-none-internal)`,
    all green; the Job steps are skipped in `expose-all`.
-
+9. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.9 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 5: 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.9 must be merged before
+   or after that sub-task (for example 1.11), not at the same time.
+   In both cases, add the file to the 1.9 row of the table.
 
 
 ---
@@ -2135,7 +2238,19 @@ message.
 6. Run the destroy Job. On GitHub Actions, the "Verify unexposed
    reachability" step is green in both unexposed legs and skipped in
    `expose-all`.
-
+7. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.10 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 6: 1.12, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.10 must be merged before
+   or after that sub-task (for example 1.12), not at the same time.
+   In both cases, add the file to the 1.10 row of the table.
 
 
 ---
@@ -2190,7 +2305,19 @@ and its commands work as written.
 3. Someone who did not write the page follows it on a fresh KIND cluster,
    copying the commands as written. Expected: the results the page shows,
    including the `kubectl get ingress` output (class `nginx` everywhere).
-
+4. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.11 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 2 and later: every sub-task still open.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.11 must be merged before
+   or after that sub-task (for example 1.x), not at the same time.
+   In both cases, add the file to the 1.11 row of the table.
 
 
 ---
@@ -2264,6 +2391,19 @@ reproduce scenario B.
    for the console; every node URL ends with `.default.svc.cluster.local`.
 3. The page uses this plan's scenario letter (B) and does not call it
    "scenario A".
+4. **Changed files vs the merge-conflict analysis.**
+   ```bash
+   git fetch origin && git diff --name-only "$BASE"...HEAD
+   ```
+   Expected: only the files of the 1.12 row of the
+   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+   If a file is not listed, check that it is not changed by the
+   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 6: 1.10, 1.11.
+   Look at their row of the table and at their open PR
+   (`gh pr diff <PR number> --name-only`). If one of them changes it,
+   raise a warning in the PR description: 1.12 must be merged before
+   or after that sub-task (for example 1.10), not at the same time.
+   In both cases, add the file to the 1.12 row of the table.
 
 
 ---

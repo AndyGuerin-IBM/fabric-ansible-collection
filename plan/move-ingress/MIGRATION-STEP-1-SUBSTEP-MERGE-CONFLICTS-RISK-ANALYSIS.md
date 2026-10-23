@@ -112,5 +112,10 @@ touch the same files:
 - Before opening a PR, and before merging it, rebase it on the target branch.
 - A PR only changes the files listed for its sub-task above. If it needs
   another file, check this page first: it may change who can run in parallel.
+- The check of every sub-task ends with this verification: it lists the
+  files the PR changes, compares them with the table above and, for a file
+  that is not listed, with the PRs of the same wave. A conflict is raised as a
+  warning in the PR (merge before or after the other sub-task), and the table
+  is updated.
 - When a PR merges, rebase the other open PRs that share a file with it (see
   "Files shared by several sub-tasks").

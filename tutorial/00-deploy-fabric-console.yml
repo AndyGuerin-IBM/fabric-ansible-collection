@@ -34,6 +34,14 @@
     - hyperledger.fabric_ansible_collection.fabric_operator_crds
 
   tasks:
+    - name: Compute the network domains
+      ansible.builtin.include_role:
+        name: hyperledger.fabric_ansible_collection.network_domains
+        public: true
+      vars:
+        network_domains_namespace: "{{ namespace }}"
+        network_domains_console_name: "{{ console_name }}"
+
     - name: Create or update Fabric Operations Console
       kubernetes.core.k8s:
         state: present

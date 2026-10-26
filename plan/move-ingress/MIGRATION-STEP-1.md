@@ -65,8 +65,8 @@ done, and its PR can be merged, when:
 
 1. every item of its **Todo list** is ticked;
 2. its automatic checks pass (`ansible-lint`, `yamllint`, `bash -n`, tests);
-3. a person has run its **✋ check** on the local KIND cluster and
-   ticked the sign-off line with a name and a date
+3. a person has run its **✋ check** on the local KIND cluster, and every
+   step gives the expected result.
 
 A sub-task starts once the sub-tasks in its "Needs" column are merged.
 Sub-tasks that don't need each other and don't touch the same files can be
@@ -122,7 +122,7 @@ Commands the checks refer to by name:
 |---|---|---|
 | **Rebuild** (after any change under `roles/` or `plugins/`) | `ansible-galaxy collection build -f --output-path /tmp/fac && ansible-galaxy collection install -f /tmp/fac/hyperledger-fabric_ansible_collection-*.tar.gz` | `... was installed successfully` |
 | **Regression run** (scenario A) | `.github/scripts/run-tests.sh` | exit 0, as at the end of Step 0 |
-| **Scenario C run** (from 1.3) | `EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false KEEP_NETWORK=true .github/scripts/run-tests.sh` | exit 0, network kept for inspection |
+| **Scenario C run** (from 1.3) | `EXPOSED_DOMAIN="$DOMAIN_A" EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false KEEP_NETWORK=true .github/scripts/run-tests.sh` | exit 0, network kept for inspection |
 | **Destroy** (from 1.3) | `RUN_TESTS_MODE=destroy .github/scripts/run-tests.sh`, with the same `EXPOSE_*` as the run | exit 0; `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` finds nothing |
 | **Fresh console** | `.github/scripts/undeploy-console.sh && .github/scripts/deploy-console.sh` | the console URL is printed |
 
@@ -289,8 +289,8 @@ before any task that branches on `expose_*` or a domain fact):
     name: hyperledger.fabric_ansible_collection.network_domains
     public: true
   vars:
-    network_domains_namespace: "{{ namespace }}"        # k8s_namespace in the organization roles
-    network_domains_console_name: "{{ console_name }}"  # console in hlfsupport_console; omitted in the organization roles
+    network_domains_namespace: "{{ project | default(namespace) }}"  # organization roles: "{{ k8s_namespace | default('') }}"
+    network_domains_console_name: "{{ console_name }}"               # console in hlfsupport_console; omitted in the organization roles
 ```
 
 | Caller | Uses |
@@ -303,9 +303,14 @@ before any task that branches on `expose_*` or a domain fact):
 - `roles/network_domains/` exists, with the variables and facts above.
 - Every role listed above includes it; no role reads another role's
   defaults.
-- With no new variable set, the role computes `hlf_node_domain =
+- With no new variable set, a console role computes `hlf_node_domain =
   console_domain`, prints the `console_domain` deprecation notice, and reads
   nothing from the cluster.
+- With no new variable set, an organization role does not fail: it knows
+  neither `console_domain` (a console variable) nor, outside the tutorial,
+  `k8s_namespace`. The domain facts stay empty and nothing is read from the
+  cluster. With unexposed components it needs `k8s_namespace`, and
+  `exposed_domain` (scenario C) or `hlf_network_domain` (scenario B).
 - `ansible-lint` and `yamllint` pass on all modified files.
 - All existing tests pass without setting any new variable.
 
@@ -326,6 +331,11 @@ before any task that branches on `expose_*` or a domain fact):
 
 **Relevant context:**
 - The defaults file holds no logic; all logic is in the tasks.
+- An organization role does not pass `network_domains_console_name`: the
+  role then requires the exposed domain and the namespace only when they
+  are used (unexposed components, or a domain variable set). Otherwise an
+  existing user of `endorsing_organization` or `ordering_organization`,
+  who never sets `console_domain` or `k8s_namespace`, would fail.
 - `public: true` exposes the role's defaults to the caller, so a caller can
   use `expose_*` directly after the include.
 - In ansible-core 2.18, a templated `set_fact: "{{ dict }}"` is a silent
@@ -350,7 +360,8 @@ cluster only when it has to, and stops on a bad combination.
    no error. Then **Rebuild**.
 2. Write a throwaway playbook that prints the facts:
    ```bash
-   cat > /tmp/nd-check.yml <<'EOF'
+   mkdir -p /tmp/check11
+   cat > /tmp/check11/nd-check.yml <<'EOF'
    - hosts: localhost
      gather_facts: false
      tasks:
@@ -358,17 +369,17 @@ cluster only when it has to, and stops on a bad combination.
            name: hyperledger.fabric_ansible_collection.network_domains
            public: true
          vars:
-           network_domains_namespace: default
-           network_domains_console_name: hlf-console
+           network_domains_namespace: "{{ nd_ns | default('default') }}"
+           network_domains_console_name: "{{ nd_console | default('hlf-console') }}"
        - ansible.builtin.debug:
            msg:
              cluster_local: "{{ hlf_network_domain_is_cluster_local }}"
              cluster_domain: "{{ network_domains_cluster_domain }}"
              hlf_node_domain: "{{ hlf_node_domain }}"
-             console_url: "{{ console_url }}"
-             console_incluster_url: "{{ console_incluster_url }}"
+             console_url: "{{ console_url | default('') }}"
+             console_incluster_url: "{{ console_incluster_url | default('') }}"
    EOF
-   nd() { ansible-playbook -i localhost, -c local /tmp/nd-check.yml "$@"; }
+   nd() { ansible-playbook -i localhost, -c local /tmp/check11/nd-check.yml "$@"; }
    ```
 3. Scenario A, **with no cluster at all**:
    ```bash
@@ -407,16 +418,26 @@ cluster only when it has to, and stops on a bad combination.
    - `-e exposed_domain=a.example.com -e console_domain=b.example.com`: alias
      conflict;
    - step 5 plus `-e cluster_domain=corp.internal`: mismatch, naming both
-     values.
-8. **Regression run**: exit 0.
-9. **Changed files vs the merge-conflict analysis.**
-   ```bash
-   git fetch origin && git diff --name-only "$BASE"...HEAD
-   ```
-   Expected: only the files of the 1.1 row of the
-   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
-   No other sub-task runs in wave 1, so a file that is not listed
-   conflicts with nothing: add it to the 1.1 row of the table.
+     values;
+   - `KUBECONFIG=/dev/null nd`: no domain for a console role.
+8. Organization roles (`-e nd_console=`: no console name, as in
+   `endorsing_organization` and `ordering_organization`):
+   - `KUBECONFIG=/dev/null nd -e nd_console= -e nd_ns=`: **passes**, every
+     domain fact empty, no cluster read (scenario A, no new variable);
+   - `nd -e nd_console= -e hlf_network_domain=cluster.local -e expose_ca=false -e expose_peer=false -e expose_orderer=false`:
+     passes, `hlf_node_domain: default.svc.cluster.local` (scenario B);
+   - `nd -e nd_console= -e expose_ca=false -e expose_peer=false -e expose_orderer=false`:
+     **fails**, asking for `exposed_domain` or `hlf_network_domain`;
+   - the scenario B line with `-e nd_ns=`: **fails**, asking for `k8s_namespace`.
+9. **Regression run**: exit 0.
+10. **Changed files vs the merge-conflict analysis.**
+    ```bash
+    git fetch origin && git diff --name-only "$BASE"...HEAD
+    ```
+    Expected: only the files of the 1.1 row of the
+    [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+    No other sub-task runs in wave 1, so a file that is not listed
+    conflicts with nothing: add it to the 1.1 row of the table.
 
 
 ---
@@ -1882,7 +1903,9 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
   `EXPOSE_PEER=true`, `EXPOSE_ORDERER=true` in `$GITHUB_ENV`. Keep existing
   runner-side `run-tests.sh` invocation — this path is unchanged.
 - [ ] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
-  `$GITHUB_ENV`. Keep `INGRESS_TYPE=nginx`.
+  `$GITHUB_ENV`, and `EXPOSED_DOMAIN` to the console domain: the organization
+  roles build the node FQDNs of scenario C from it (sub-task 1.1). Keep
+  `INGRESS_TYPE=nginx`.
 - [ ] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
   `CLUSTER_DOMAIN` **before** `kind_with_nginx.sh`: since sub-task 1.8 the
   script reads them to write the CoreDNS rules, before any playbook runs.
@@ -2461,5 +2484,5 @@ A Step 1 delivery is considered complete when all of the following pass:
 8. `docs/source` builds without warnings (`make -C docs html`).
 9. No Gateway API CRD, template, task, or Kubernetes resource is introduced —
    the Gateway API path is entirely absent from the codebase at this stage.
-10. Every  check, 1.1 to 1.12, is signed off (name and date), in
-    order: none was skipped to start a later sub-task.
+10. Every  check, 1.1 to 1.12, has been run, in order: none was skipped to
+    start a later sub-task.

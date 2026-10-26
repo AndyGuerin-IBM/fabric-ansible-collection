@@ -12,14 +12,14 @@ A sub-task can need another one for three different reasons:
 | Kind | Meaning | Example | Consequence |
 |---|---|---|---|
 | **Code** | its code uses something the other one adds | 1.6 includes the `network_domains` role of 1.1 | start after the other PR is merged |
-| **Check** | its code is independent, but its ✋ check needs the other feature | the check of 1.6 runs a scenario C test, which needs the `EXPOSE_*` injection of 1.3 | the code can be written in parallel; sign-off and merge wait for the other PR |
+| **Check** | its code is independent, but its ✋ check needs the other feature | the check of 1.6 runs a scenario C test, which needs the `EXPOSE_*` injection of 1.3 | the code can be written in parallel; the check and the merge wait for the other PR |
 | **Files** | both change the same file | 1.4 and 1.5 both change the console tasks | no logical dependency, but in parallel they conflict: do them one after the other |
 
 ## Files changed by each sub-task
 
 | Sub-task | Files |
 |---|---|
-| 1.1 `network_domains` | `roles/network_domains/` (new); `roles/fabric_console/tasks/create.yml`; `roles/hlfsupport_console/tasks/create.yml`; `roles/endorsing_organization/tasks/{create,delete}.yml`; `roles/ordering_organization/tasks/{create,delete}.yml`; `tutorial/00-deploy-fabric-console.yml`; `roles/fabric_operator_crds/defaults/main.yml`; `tutorial/common-vars.yml` |
+| 1.1 `network_domains` | `roles/network_domains/` (new); `roles/fabric_console/tasks/create.yml`; `roles/hlfsupport_console/tasks/create.yml`; `roles/endorsing_organization/tasks/{create,delete}.yml`; `roles/ordering_organization/tasks/{create,delete}.yml`; `tutorial/00-deploy-fabric-console.yml`; `roles/fabric_operator_crds/defaults/main.yml`; `tutorial/common-vars.yml`; `plan/move-ingress/MIGRATION-STEP-1.md` (organization-role correction found while implementing) |
 | 1.2 rule tests | test playbooks of `network_domains` (new, test tree); `.github/workflows/fvtest.yml` (one step) |
 | 1.3 variable injection | `.github/scripts/run-tests.sh`; `.github/scripts/deploy-console.sh`; their shared patching helper (new) |
 | 1.4 console wait | `roles/fabric_console/tasks/k8s/create.yml`; `roles/hlfsupport_console/tasks/k8s/create.yml`; `tutorial/00-deploy-fabric-console.yml` |

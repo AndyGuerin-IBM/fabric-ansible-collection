@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 # Copyright the Hyperledger Fabric contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Runs the tutorial test suite: build the network, join it, deploy the smart
+# contract, destroy the network.
+#
+# Scenario variables (INGRESS_TYPE, EXPOSE_*, EXPOSED_DOMAIN, ...): see
+# scenario-vars.sh. Run modes:
+#   RUN_TESTS_MODE=run      (default) the whole suite
+#   RUN_TESTS_MODE=patch    patch the vars files, run no playbook
+#   RUN_TESTS_MODE=destroy  patch the vars files, destroy the network only
+#   KEEP_NETWORK=true       do not destroy the network at the end
 set -euo pipefail
 
 # For local development: source connection details written by deploy-console.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=scenario-vars.sh
+source "${SCRIPT_DIR}/scenario-vars.sh"
 if [[ -f "${REPO_ROOT}/_cfg/console-env.sh" ]]; then
     # shellcheck source=/dev/null
     source "${REPO_ROOT}/_cfg/console-env.sh"
@@ -18,7 +30,19 @@ API_KEY="${API_KEY:-admin}"
 API_SECRET="${API_SECRET:-password}"
 K8S_NAMESPACE="${K8S_NAMESPACE:-default}"
 
-cd tutorial
+RUN_TESTS_MODE="${RUN_TESTS_MODE:-run}"
+case "${RUN_TESTS_MODE}" in
+    run|patch|destroy) ;;
+    *) echo "ERROR: RUN_TESTS_MODE='${RUN_TESTS_MODE}': must be run, patch or destroy" >&2; exit 1 ;;
+esac
+KEEP_NETWORK="$(scenario_bool KEEP_NETWORK "${KEEP_NETWORK:-false}")"
+
+cd "${REPO_ROOT}/tutorial"
+
+# Scenario variables, read by every playbook (console and organizations)
+patch_scenario_vars common-vars.yml
+print_scenario_vars common-vars.yml
+echo "==> Run: RUN_TESTS_MODE=${RUN_TESTS_MODE} KEEP_NETWORK=${KEEP_NETWORK} API_ENDPOINT=${API_ENDPOINT} K8S_NAMESPACE=${K8S_NAMESPACE}"
 
 # Inject live connection parameters into every org vars file
 for VARS in ordering-org-vars.yml org1-vars.yml org2-vars.yml; do
@@ -31,15 +55,30 @@ for VARS in ordering-org-vars.yml org1-vars.yml org2-vars.yml; do
     yq -yi ".wait_timeout=1800"                  "${VARS}"
 done
 
+if [[ "${RUN_TESTS_MODE}" == "patch" ]]; then
+    echo "==> RUN_TESTS_MODE=patch: vars files patched, no playbook run"
+    exit 0
+fi
+if [[ "${RUN_TESTS_MODE}" == "destroy" ]]; then
+    ./join_network.sh destroy
+    exit 0
+fi
+
 function cleanup {
     ./join_network.sh destroy || true
 }
-trap cleanup EXIT
+if [[ "${KEEP_NETWORK}" != "true" ]]; then
+    trap cleanup EXIT
+fi
 
 ./build_network.sh build
 
 ./join_network.sh join
 ./deploy_smart_contract.sh
 
+if [[ "${KEEP_NETWORK}" == "true" ]]; then
+    echo "==> KEEP_NETWORK=true: the network is kept (RUN_TESTS_MODE=destroy removes it)"
+    exit 0
+fi
 trap - EXIT
 ./join_network.sh destroy

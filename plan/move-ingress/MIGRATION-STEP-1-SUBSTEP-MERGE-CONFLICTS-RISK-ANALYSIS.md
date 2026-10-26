@@ -20,7 +20,7 @@ A sub-task can need another one for three different reasons:
 | Sub-task | Files |
 |---|---|
 | 1.1 `network_domains` | `roles/network_domains/` (new); `roles/fabric_console/tasks/create.yml`; `roles/hlfsupport_console/tasks/create.yml`; `roles/endorsing_organization/tasks/{create,delete}.yml`; `roles/ordering_organization/tasks/{create,delete}.yml`; `tutorial/00-deploy-fabric-console.yml`; `roles/fabric_operator_crds/defaults/main.yml`; `tutorial/common-vars.yml`; `plan/move-ingress/MIGRATION-STEP-1.md` (organization-role correction found while implementing) |
-| 1.2 rule tests | test playbooks of `network_domains` (new, test tree); `.github/workflows/fvtest.yml` (one step) |
+| 1.2 rule tests | `tests/network_domains/` (new: `test.yml`, `test_case.yml`, `test_extra_vars.yml`, `run.sh`); `.github/workflows/fvtest.yml` (one step); `plan/move-ingress/MIGRATION-STEP-1.md` (check 1.2 only) |
 | 1.3 variable injection | `.github/scripts/run-tests.sh`; `.github/scripts/deploy-console.sh`; their shared patching helper (new) |
 | 1.4 console wait | `roles/fabric_console/tasks/k8s/create.yml`; `roles/hlfsupport_console/tasks/k8s/create.yml`; `tutorial/00-deploy-fabric-console.yml` |
 | 1.5 `IBPConsole` fields | console templates (`roles/fabric_console/templates/`, `roles/hlfsupport_console/templates/`); console tasks `{k8s,openshift}/{create,delete}.yml` of both console roles; `tutorial/00-deploy-fabric-console.yml` |

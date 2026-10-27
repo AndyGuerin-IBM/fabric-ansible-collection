@@ -24,3 +24,10 @@ ca_version: ">=1.4,<2.0"
 peer_version: ">=2.2,<3.0"
 peer_state_db: leveldb
 ordering_service_version: ">=2.2,<3.0"
+# Domains (role network_domains). exposed_domain: domain of the console URL;
+# empty, the console domain passed to 00-deploy-fabric-console.yml is used.
+# hlf_network_domain: domain of the CA, peer and orderer FQDNs; empty, the
+# exposed domain. Set it to the cluster domain (cluster.local) for node FQDNs
+# that are Kubernetes Service FQDNs (scenario B).
+# exposed_domain: ""
+# hlf_network_domain: ""

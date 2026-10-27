@@ -21,7 +21,7 @@ A sub-task can need another one for three different reasons:
 |---|---|
 | 1.1 `network_domains` | `roles/network_domains/` (new); `roles/fabric_console/tasks/create.yml`; `roles/hlfsupport_console/tasks/create.yml`; `roles/endorsing_organization/tasks/{create,delete}.yml`; `roles/ordering_organization/tasks/{create,delete}.yml`; `tutorial/00-deploy-fabric-console.yml`; `roles/fabric_operator_crds/defaults/main.yml`; `tutorial/common-vars.yml`; `plan/move-ingress/MIGRATION-STEP-1.md` (organization-role correction found while implementing) |
 | 1.2 rule tests | `tests/network_domains/` (new: `test.yml`, `test_case.yml`, `test_extra_vars.yml`, `run.sh`); `.github/workflows/fvtest.yml` (one step); `plan/move-ingress/MIGRATION-STEP-1.md` (check 1.2 only) |
-| 1.3 variable injection | `.github/scripts/run-tests.sh`; `.github/scripts/deploy-console.sh`; their shared patching helper (new) |
+| 1.3 variable injection | `.github/scripts/run-tests.sh`; `.github/scripts/deploy-console.sh`; their shared patching helper `.github/scripts/scenario-vars.sh` (new); `tutorial/00-deploy-fabric-console.yml` (`network_domains` include moved to `pre_tasks`); `plan/move-ingress/MIGRATION-STEP-1.md` (1.3 text only) |
 | 1.4 console wait | `roles/fabric_console/tasks/k8s/create.yml`; `roles/hlfsupport_console/tasks/k8s/create.yml`; `tutorial/00-deploy-fabric-console.yml` |
 | 1.5 `IBPConsole` fields | console templates (`roles/fabric_console/templates/`, `roles/hlfsupport_console/templates/`); console tasks `{k8s,openshift}/{create,delete}.yml` of both console roles; `tutorial/00-deploy-fabric-console.yml` |
 | 1.6 per-endpoint Services | `roles/k8s_endpoint_services/` (new); `roles/endorsing_organization/tasks/{create,delete}.yml`; `roles/ordering_organization/tasks/{create,delete}.yml`; `docs/source/roles/` (new page, listed by a glob: no index change) |
@@ -40,7 +40,7 @@ These are the only places where two PRs can conflict:
 |---|---|---|
 | organization roles, `tasks/create.yml` | 1.1, 1.6, 1.7 | one after the other (code dependency anyway) |
 | organization roles, `tasks/delete.yml` | 1.1, 1.6 | one after the other |
-| `tutorial/00-deploy-fabric-console.yml` | 1.1, 1.4, 1.5 | one after the other |
+| `tutorial/00-deploy-fabric-console.yml` | 1.1, 1.3, 1.4, 1.5 | one after the other (1.4 needs 1.3; 1.2 and 1.11, in parallel with 1.3, don't touch it) |
 | console roles, `tasks/k8s/create.yml` | 1.4, 1.5 | one after the other |
 | `.github/workflows/fvtest.yml` | 1.2, 1.9, 1.10 | 1.2 early; 1.10 after 1.9 |
 | `docs/source/index.rst` | 1.11 (if new page), 1.12 | one toctree line each: trivial to rebase |

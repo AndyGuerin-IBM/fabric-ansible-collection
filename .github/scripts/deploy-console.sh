@@ -14,6 +14,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=scenario-vars.sh
+source "${SCRIPT_DIR}/scenario-vars.sh"
 
 # Activate the project virtualenv if present so ansible-playbook uses the
 # Python interpreter that has the kubernetes SDK installed.
@@ -40,9 +42,11 @@ case "${_HOST_UNAME}" in
 esac
 NODE_ARCH="${NODE_ARCH:-${_DEFAULT_NODE_ARCH}}"
 
-# Derive domain from the host IP (mirrors what fvtest.yml does)
+# Console domain: EXPOSED_DOMAIN when set, otherwise derived from the host IP
+# (mirrors what fvtest.yml does). Both must be the same value: the console
+# playbook passes it as console_domain, the alias of exposed_domain.
 HOST_IP=$(sh "${SCRIPT_DIR}/get-host-ip.sh")
-CONSOLE_DOMAIN=$(echo "${HOST_IP}" | tr -s '.' '-').nip.io
+CONSOLE_DOMAIN="${EXPOSED_DOMAIN:-$(echo "${HOST_IP}" | tr -s '.' '-').nip.io}"
 
 API_ENDPOINT="https://${CONSOLE_NAMESPACE}-${CONSOLE_NAME}-console.${CONSOLE_DOMAIN}"
 
@@ -52,6 +56,11 @@ echo "    name      : ${CONSOLE_NAME}"
 echo "    domain    : ${CONSOLE_DOMAIN}"
 echo "    endpoint  : ${API_ENDPOINT}"
 echo "    arch      : ${NODE_ARCH}"
+echo ""
+
+# Scenario variables (sub-task 1.3): the same values as run-tests.sh writes
+patch_scenario_vars "${REPO_ROOT}/tutorial/common-vars.yml"
+print_scenario_vars "${REPO_ROOT}/tutorial/common-vars.yml"
 echo ""
 
 # ---- Deploy via ansible-playbook ---------------------------------------------

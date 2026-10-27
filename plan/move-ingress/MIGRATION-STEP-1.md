@@ -555,7 +555,19 @@ editing vars files by hand.
 - These go to `common-vars.yml`, not `-e`: every playbook (console and
   organizations) then reads the same values (URL-MANAGEMENT-NEW.md §6.3).
 - `deploy-console.sh` applies the same patching, so
-  `EXPOSE_CONSOLE=false .github/scripts/deploy-console.sh` works.
+  `EXPOSE_CONSOLE=false .github/scripts/deploy-console.sh` works. When
+  `EXPOSED_DOMAIN` is set, it is also the console domain the script passes to
+  the playbook (`hlf_console_domain`): otherwise the console would get two
+  different domains and the role would fail with an alias conflict.
+- The patching lives in one helper, `.github/scripts/scenario-vars.sh`,
+  sourced by both scripts. A variable that is not set is **removed** from
+  `common-vars.yml`, so a value left by a previous run never leaks into the
+  next one. Invalid values (`EXPOSE_CA=maybe`, an `INGRESS_TYPE` other than
+  `nginx`, a domain with other characters than letters, digits, dots and
+  dashes) stop the script with an error.
+- In `tutorial/00-deploy-fabric-console.yml`, the `network_domains` include
+  runs in `pre_tasks`, before the `fabric_operator_crds` role: a bad domain
+  combination fails before any change to the cluster.
 - Run modes: `KEEP_NETWORK=true` keeps the network after the tests,
   `RUN_TESTS_MODE=destroy` only destroys it, `RUN_TESTS_MODE=patch` only
   patches the vars files (to run one tutorial playbook by hand).
@@ -575,7 +587,10 @@ editing vars files by hand.
   running any playbook.
 - [ ] For the in-cluster Job (sub-task 1.9):
   - take `TEST_RUN_ID` from the environment when set, instead of generating
-    it (Step 0 stamping), so two runs can target the same network;
+    it (Step 0 stamping), so two runs can target the same network. **Not
+    done:** the Step 0 stamping does not exist (REMAINING_TODO.md item 2).
+    Until it does, the names are fixed, so the destroy Job of 1.9 finds the
+    network of the first Job without it;
   - `KEEP_NETWORK=true`: skip the final `join_network.sh destroy` and the
     cleanup trap;
   - `RUN_TESTS_MODE=destroy`: patch the vars files, then only run

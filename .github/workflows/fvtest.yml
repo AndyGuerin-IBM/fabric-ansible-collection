@@ -41,6 +41,8 @@ jobs:
         run: |
           ansible-galaxy collection build -f
           ansible-galaxy collection install $(ls -1 | grep fabric_ansible_collection) -f
+      - name: network_domains rules
+        run: tests/network_domains/run.sh
       - name: Deploy Fabric Operator and Console
         run: |
           ansible-playbook -i localhost, -c local \

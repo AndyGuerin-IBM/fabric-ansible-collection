@@ -699,6 +699,11 @@ console changes.
 - [ ] `roles/fabric_console/tasks/k8s/create.yml:57-59` and
   `tutorial/00-deploy-fabric-console.yml:143-145`: print `console_url`, and
   the same notice when `expose_console: false`.
+- [ ] The wait on the `Available` condition and the notice are written once,
+  in `roles/network_domains/tasks/console_not_exposed.yml`: the three callers
+  (`hlfsupport_console`, `fabric_console`, `tutorial/00-deploy-fabric-console.yml`)
+  include it with `tasks_from` when `expose_console` is false, so they behave
+  the same.
 - [ ] Do **not** add any Gateway API (`ingress_type == 'gateway-api'`) branch
   yet; it belongs in Step 2.
 - [ ] Run `ansible-lint` on the modified files.
@@ -707,6 +712,8 @@ console changes.
 - MIGRATION-PLAN.md §5.5 has a first draft of these tasks; it predates the
   `exposed_domain` / `console_url` design and uses `http://`. Follow this
   sub-task instead.
+- Only the `k8s` task files change. The OpenShift files (`tasks/openshift/`)
+  wait for a Route and are not part of Step 1.
 - Health path: the CI checks use `/ak/api/v3/health` with Basic auth (it
   returns 401 without credentials). Use the same path everywhere.
 

@@ -474,7 +474,10 @@ adds the tests and their CI hook.
 **Todo list:**
 - [ ] Port the prototype tests (`test.yml`, `test_case.yml`,
   `test_extra_vars.yml`; 13 cases, 2026-10-16: all pass) to the collection's
-  test tree (or a molecule scenario).
+  test tree: `tests/network_domains/`, run by `tests/network_domains/run.sh`.
+  The playbook fails when a case fails, checks the role's message of each
+  failing case, and also covers V4 and the organization-role cases of
+  sub-task 1.1.
 - [ ] Add a "network_domains rules" step to `fvtest.yml`, before
   `run-tests.sh`.
 - [ ] Add a case with the ConfigMap unreadable (a ServiceAccount without
@@ -490,17 +493,22 @@ adds the tests and their CI hook.
 **Proves:** the rule tests run, cover every case of the table, and catch a
 broken rule.
 
-1. Run the ported test playbook (its path is chosen in the todo list; the
-   prototype is `.url_management_new_checks/network_domains/test.yml`):
+1. **Rebuild**, then run the tests:
    ```bash
-   ansible-playbook -i localhost, -c local <tests dir>/test.yml
+   tests/network_domains/run.sh
    ```
-   Expected: one `PASS` per row of the table above, plus the
-   unreadable-ConfigMap cases; `failed=0`.
+   Expected: 20 `PASS` lines (every row of the table above, V4, the four
+   organization-role cases of 1.1, the two unreadable-ConfigMap cases), then
+   `All 20 cases passed.` and `-e inputs did not hide the computed facts.`;
+   `failed=0`, exit 0. The unreadable-ConfigMap failure shows `403`
+   (`Forbidden`): the test really ran with the restricted ServiceAccount.
+   `kubectl get sa network-domains-test-noread -n default` then finds
+   nothing (the test deletes it).
 2. Break a rule on purpose: comment out the V3 assertion in
    `roles/network_domains/tasks/main.yml`, **Rebuild**, rerun step 1.
-   Expected: the V3 case fails, every other case still passes. Undo the
-   edit, **Rebuild**, rerun: all pass again.
+   Expected: the V3 case fails, every other case still passes, and
+   `run.sh` exits non-zero (`1 case(s) failed: V3, ...`). Undo the edit
+   (`git diff roles/` empty), **Rebuild**, rerun: all pass again.
 3. The CI hook is in place:
    ```bash
    grep -n -B2 -A4 'network_domains rules' .github/workflows/fvtest.yml

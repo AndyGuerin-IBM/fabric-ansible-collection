@@ -44,6 +44,29 @@
   vars:
       network_domains_namespace: "{{ k8s_namespace | default('') }}"
 
+- name: Get the CA if it exists already (unexposed)
+  hyperledger.fabric_ansible_collection.certificate_authority_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ca_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_ca_info
+  when: not expose_ca | bool
+
+- name: Create per-endpoint Services for the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [ordering_organization_ca_info.certificate_authority.api_url | default('')] }}"
+  when: not expose_ca | bool
+
 - name: Create certificate authority
   hyperledger.fabric_ansible_collection.certificate_authority:
       state: "{{ state }}"
@@ -76,6 +99,28 @@
       version: "{{ ca_version | default(omit) }}"
       zone: "{{ ca_zone | default(omit) }}"
       wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_ca
+
+- name: Check the CA URLs use the HLF node domain (V5)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.network_domains
+      tasks_from: verify_urls
+  vars:
+      network_domains_urls: >-
+          {{ [ordering_organization_ca.certificate_authority.api_url, ordering_organization_ca.certificate_authority.operations_url] }}
+
+- name: Verify per-endpoint Services for the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: verify
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [ordering_organization_ca_info.certificate_authority.api_url | default('')] }}"
+      k8s_endpoint_services_urls: >-
+          {{ [ordering_organization_ca.certificate_authority.api_url, ordering_organization_ca.certificate_authority.operations_url] }}
+  when: not expose_ca | bool
 
 - name: Enroll certificate authority admin
   hyperledger.fabric_ansible_collection.enrolled_identity:
@@ -156,6 +201,31 @@
       admins:
           - "{{ ordering_organization_org_admin.enrolled_identity.cert | default(omit) }}"
 
+- name: Get the ordering service if it exists already (unexposed)
+  hyperledger.fabric_ansible_collection.ordering_service_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ordering_service_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_os_info
+  when: not expose_orderer | bool
+
+- name: Create per-endpoint Services for the ordering nodes (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: orderer
+      k8s_endpoint_services_display_name: "{{ ordering_service_name }}"
+      k8s_endpoint_services_count: "{{ ordering_service_nodes }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ ordering_organization_os_info.ordering_service | default([]) | map(attribute='api_url') | list }}
+  when: not expose_orderer | bool
+
 - name: Create ordering service
   hyperledger.fabric_ansible_collection.ordering_service:
       state: "{{ state }}"
@@ -178,3 +248,33 @@
       version: "{{ ordering_service_version | default(omit) }}"
       zones: "{{ ordering_service_zones | default(omit) }}"
       wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_os
+
+- name: List the URLs returned for the ordering nodes
+  set_fact:
+      ordering_organization_os_urls: >-
+          {{ ordering_organization_os.ordering_service | map(attribute='api_url', default='') | list
+             + ordering_organization_os.ordering_service | map(attribute='operations_url', default='') | list
+             + ordering_organization_os.ordering_service | map(attribute='grpcwp_url', default='') | list
+             + ordering_organization_os.ordering_service | map(attribute='osnadmin_url', default='') | list }}
+
+- name: Check the ordering node URLs use the HLF node domain (V5)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.network_domains
+      tasks_from: verify_urls
+  vars:
+      network_domains_urls: "{{ ordering_organization_os_urls }}"
+
+- name: Verify per-endpoint Services for the ordering nodes (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: verify
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: orderer
+      k8s_endpoint_services_display_name: "{{ ordering_service_name }}"
+      k8s_endpoint_services_count: "{{ ordering_service_nodes }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ ordering_organization_os_info.ordering_service | default([]) | map(attribute='api_url') | list }}
+      k8s_endpoint_services_urls: "{{ ordering_organization_os_urls }}"
+  when: not expose_orderer | bool

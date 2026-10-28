@@ -123,7 +123,7 @@ Commands the checks refer to by name:
 | **Rebuild** (after any change under `roles/` or `plugins/`) | `ansible-galaxy collection build -f --output-path /tmp/fac && ansible-galaxy collection install -f /tmp/fac/hyperledger-fabric_ansible_collection-*.tar.gz` | `... was installed successfully` |
 | **Regression run** (scenario A) | `.github/scripts/run-tests.sh` | exit 0, as at the end of Step 0 |
 | **Scenario C run** (from 1.3) | `EXPOSED_DOMAIN="$DOMAIN_A" EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false KEEP_NETWORK=true .github/scripts/run-tests.sh` | exit 0, network kept for inspection |
-| **Destroy** (from 1.3) | `RUN_TESTS_MODE=destroy .github/scripts/run-tests.sh`, with the same `EXPOSE_*` as the run | exit 0; `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` finds nothing |
+| **Destroy** (from 1.3) | `RUN_TESTS_MODE=destroy .github/scripts/run-tests.sh`, with the same scenario variables as the run (`EXPOSE_*` **and** `EXPOSED_DOMAIN`) | exit 0; `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` finds nothing |
 | **Fresh console** | `.github/scripts/undeploy-console.sh && .github/scripts/deploy-console.sh` | the console URL is printed |
 
 **What a laptop can run.** The laptop reaches the cluster only through nginx
@@ -1139,6 +1139,19 @@ k8s_endpoint_services_urls: []
     _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"
 ```
 
+**Finding (found by running the role): an inline `targetPort` does not stay an
+integer.** `targetPort: "{{ item.1.target_port | int }}"`, as written above,
+reaches Kubernetes as the string `"7054"`, and the API server rejects it
+(`must contain at least one letter (a-z)`: a string `targetPort` is the *name*
+of a port). Ansible keeps a number rendered inside a nested `definition` as a
+string. The role therefore renders the Service from
+`templates/service.yml.j2`, where `targetPort` is an unquoted number, and
+parses it with `from_yaml`:
+
+```yaml
+definition: "{{ lookup('ansible.builtin.template', 'service.yml.j2') | from_yaml }}"
+```
+
 `roles/k8s_endpoint_services/tasks/verify.yml`:
 
 ```yaml
@@ -1178,6 +1191,29 @@ k8s_endpoint_services_urls: []
 ```
 
 ### Calls from the organization roles
+
+**Implemented differently from the snippets below, for one reason.** The
+snippets build the CR names inline, so the rules S1 and S2 would be copied
+into four call sites, and the role defaults `k8s_endpoint_services_cr_name_regex`
+and `k8s_endpoint_services_orderer_node_suffix` would not be used by anything.
+The assumptions table promises that a wrong guess is a default to change. So
+each call passes `k8s_endpoint_services_display_name` (and
+`k8s_endpoint_services_count` for the peers and the ordering nodes), and the
+role works the names out in `tasks/cr_names.yml` with those two defaults.
+`k8s_endpoint_services_cr_names` still overrides the result (check 7 uses it).
+Everything else is as written below.
+
+**Reruns.** Before each "Create per-endpoint Services" call, the organization
+role gets the node with `certificate_authority_info`, `peer_info` (one call
+per peer) or `ordering_service_info`, and passes the `api_url` of each node
+that exists already in `k8s_endpoint_services_existing_urls` (`""` for a node
+not created yet). `tasks/cr_names.yml` reads the CR name of an existing node
+from its URL, and works out only the others. The verify call gets the same
+list. The `delete.yml` of each organization role does the same before it
+deletes the nodes, with `failed_when: false`: a node that does not answer
+must not block the deletion, and its CR name is then worked out from its
+display name. The `*_info` modules wait for `/healthz`, like the create
+modules called just after them, so they add no new way to fail on a rerun.
 
 `roles/endorsing_organization/tasks/create.yml` (after the
 `network_domains` include of sub-task 1.1, which makes `expose_*` and
@@ -1276,23 +1312,29 @@ The `delete.yml` of each organization role calls
 - `ansible-lint` passes on the new role and all modified task files.
 
 **Todo list:**
-- [ ] Create `roles/k8s_endpoint_services/` (`defaults/main.yml`,
-  `tasks/main.yml`, `tasks/verify.yml`, `tasks/delete.yml`, `meta/main.yml`)
+- [x] Create `roles/k8s_endpoint_services/` (`defaults/main.yml`,
+  `tasks/main.yml`, `tasks/cr_names.yml`, `tasks/verify.yml`, `tasks/delete.yml`,
+  `templates/service.yml.j2`, `meta/main.yml`)
   with the content above. `k8s_endpoint_services_namespace` is passed by the
   caller (no `k8s_namespace` default inside the role).
-- [ ] Add the create / V5 / verify blocks around the CA and peer module calls
+- [x] Add the create / V5 / verify blocks around the CA and peer module calls
   in `roles/endorsing_organization/tasks/create.yml`, and register the module
   outputs (`endorsing_organization_ca`, `endorsing_organization_peer`,
   `endorsing_organization_peers`).
-- [ ] Add the create / V5 / verify blocks around the CA and ordering-service
+- [x] Add the create / V5 / verify blocks around the CA and ordering-service
   module calls in `roles/ordering_organization/tasks/create.yml`, and
   register the module outputs.
-- [ ] Add the delete calls to both organization roles' `delete.yml`.
-- [ ] Make the verify step's failure message print the CR name read from the
+- [x] Add the delete calls to both organization roles' `delete.yml`.
+- [x] Make the verify step's failure message print the CR name read from the
   returned URL, so an S1 mismatch is fixable at once.
-- [ ] Document the new role in `docs/source/roles/` (internal, but its
-  defaults are user-overridable).
-- [ ] Run `ansible-lint` on the new role and all modified task files.
+- [x] On reruns, read the CR names from the URLs of the existing nodes
+  (`*_info` modules, `k8s_endpoint_services_existing_urls`), in `create.yml`
+  and `delete.yml` of both organization roles.
+- [x] Document the new role in `docs/source/roles/k8s-endpoint-services.rst`
+  (internal, but its defaults are user-overridable). The `roles/*` glob lists
+  it: no index change. The page uses titles that appear nowhere else, so the
+  docs build keeps its 211 warnings.
+- [x] Run `ansible-lint` on the new role and all modified task files.
 
 **Relevant context:**
 - Sub-task 1.6 runs whenever the component is not exposed, **including**
@@ -1310,6 +1352,9 @@ The `delete.yml` of each organization role calls
   however, assume CA, peer and orderer are **all** unexposed, because the
   `-operations` suffix is shared by all three components. Mixed modes need
   exact per-FQDN rewrites and are out of scope for Step 1 CI.
+- A throwaway playbook must receive a display name as JSON
+  (`-e '{"dn": "Org1 CA"}'`): with `-e dn="Org1 CA"` Ansible keeps only
+  `Org1` (finding F3).
 - The port variables `ingress_grpc_peer_port`, `ingress_grpc_orderer_port`
   and `ingress_ca_port` from sub-task 1.1 remain Gateway-API listener ports
   for Step 2. They are **not** the native target ports above.
@@ -1351,7 +1396,8 @@ Service FQDNs: the names scenario B uses.
      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.ports[*].port}{"\n"}{end}'
    ```
    Expected: native ports only (7054, 9443, 7051, ...), no `443` on a CA,
-   peer or orderer Service.
+   peer or orderer Service. The `kubernetes` Service of the API server also
+   lists `443`: ignore it.
 6. The Service names reach the right port, from inside the cluster:
    ```bash
    PEER_OPS=$(kubectl get svc -n "$NS" -l "$SEL,fabric-ansible-collection/component=peer,fabric-ansible-collection/endpoint=operations" -o jsonpath='{.items[0].metadata.name}')
@@ -1390,12 +1436,33 @@ Service FQDNs: the names scenario B uses.
    ```
    Expected: both fail. V5 names the URL and `hlf_node_domain`; the verify
    message names `$PEER_OPS` and tells where the real CR name is in it.
-8. **Destroy** (with the same `EXPOSE_*`). Expected: exit 0, and
+8. **Rerun**: the CR name of an existing node is read from its URL. With
+   the network of step 2 still up, run the organization playbooks again:
+   ```bash
+   kubectl get svc -n "$NS" -l "$SEL" -o custom-columns=N:.metadata.name,U:.metadata.uid --no-headers | sort > /tmp/svc-before
+   (cd tutorial && ansible-playbook 01-create-ordering-organization-components.yml \
+     && ansible-playbook 02-create-endorsing-organization-components.yml)
+   kubectl get svc -n "$NS" -l "$SEL" -o custom-columns=N:.metadata.name,U:.metadata.uid --no-headers | sort | diff /tmp/svc-before - && echo IDENTICAL
+   ```
+   Expected: exit 0; "Get the CA if it exists already", "Get the peers that
+   exist already" and "Get the ordering service if it exists already" are
+   `ok`; `IDENTICAL` (same names, same UIDs). Then show that the name comes
+   from the URL, not from the display name: in the playbook of step 7, add a
+   `peer_info` call on `Org1 Peer` before the verify step, give the verify
+   step the display name `Wrong Name`, its `api_url` in
+   `k8s_endpoint_services_existing_urls`, and its three URLs in
+   `k8s_endpoint_services_urls`. Expected: it passes; without
+   `k8s_endpoint_services_existing_urls` it fails and names `org1peer`.
+9. **Destroy**, with the same `EXPOSE_*` **and** `EXPOSED_DOMAIN` as the run:
+   the delete tasks compute the domains first, and an unexposed component
+   needs `EXPOSED_DOMAIN` (without it the run fails, nothing is deleted); without
+   `EXPOSE_*` the Services of the unexposed components are left behind. Expected: exit 0,
+   the "Get ... if it exists" tasks run before the nodes are deleted, and
    `kubectl get svc -n "$NS" -l "$SEL"` finds nothing: the delete path
    removed the Services.
-9. Scenario A creates nothing: **Regression run** with `KEEP_NETWORK=true`,
+10. Scenario A creates nothing: **Regression run** with `KEEP_NETWORK=true`,
    then `kubectl get svc -n "$NS" -l "$SEL"` finds nothing. **Destroy**.
-10. **Changed files vs the merge-conflict analysis.**
+11. **Changed files vs the merge-conflict analysis.**
     ```bash
     git fetch origin && git diff --name-only "$BASE"...HEAD
     ```

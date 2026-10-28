@@ -1,0 +1,50 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+# Inputs. The organization roles include this role for the components that are
+# not exposed (expose_ca, expose_peer, expose_orderer: false).
+
+# Namespace of the console and of the nodes, passed by the caller.
+k8s_endpoint_services_namespace: ""
+
+# Kind of component the Services are created for: ca | peer | orderer.
+k8s_endpoint_services_component: ""
+
+# Display name of the component and number of nodes (peers, ordering nodes).
+# The role works out the operator CR names from them with the two rules below.
+k8s_endpoint_services_display_name: ""
+k8s_endpoint_services_count: 1
+# Operator CR names, one per node. Empty: worked out from the display name.
+# Set it to give the names explicitly.
+k8s_endpoint_services_cr_names: []
+# On a rerun: one URL per node, in node order, as the console returns it for a
+# node that exists already ("" for a node not created yet). The CR name of an
+# existing node is read from its URL, not worked out from the display name.
+k8s_endpoint_services_existing_urls: []
+# Fresh CR name = display name in lower case, every character that does not
+# match removed ("Org1 CA" gives org1ca). Several peers: the number is added to
+# the display name first ("Org1 Peer" gives org1peer1, org1peer2).
+k8s_endpoint_services_cr_name_regex: '[^a-z0-9]'
+# Ordering node CR names: <ordering service CR name><suffix><i>, i = 1..N.
+k8s_endpoint_services_orderer_node_suffix: node
+# Pod label that selects the pods of one CR: <key>: <CR name>.
+k8s_endpoint_services_selector_key: app
+
+# Endpoint types per component and the native container port each one maps to.
+k8s_endpoint_services_endpoints:
+  ca:
+    - {endpoint: ca, target_port: 7054}
+    - {endpoint: operations, target_port: 9443}
+  peer:
+    - {endpoint: peer, target_port: 7051}
+    - {endpoint: operations, target_port: 9443}
+    - {endpoint: grpcweb, target_port: 7443}
+  orderer:
+    - {endpoint: orderer, target_port: 7050}
+    - {endpoint: admin, target_port: 9443}
+    - {endpoint: operations, target_port: 8443}
+    - {endpoint: grpcweb, target_port: 7443}
+
+# URLs returned by the module call, to check with tasks_from: verify.
+k8s_endpoint_services_urls: []

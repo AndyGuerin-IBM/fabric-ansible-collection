@@ -1600,7 +1600,7 @@ ends in an endpoint word. Scenario B needs no such pattern.
   `kind_with_envoy_gateway.sh` introduced in Step 2.
 
 **Todo list:**
-- [ ] In `.github/scripts/kind_with_nginx.sh`, add the inputs (they default to
+- [x] In `.github/scripts/kind_with_nginx.sh`, add the inputs (they default to
   the values the tutorial already uses):
   ```bash
   NAMESPACE=${NAMESPACE:-default}
@@ -1608,7 +1608,7 @@ ends in an endpoint word. Scenario B needs no such pattern.
   # HLF_NETWORK_DOMAIN defaults to NIP_DOMAIN (= exposed domain) inside
   # apply_coredns_override
   ```
-- [ ] Add a helper that prints the endpoint rewrite blocks:
+- [x] Add a helper that prints the endpoint rewrite blocks:
   ```bash
   # coredns_endpoint_rewrites NAMESPACE HLF_NETWORK_DOMAIN CLUSTER_DOMAIN
   # One rewrite per endpoint type: <ns>-<cr>-<endpoint>.<domain> -> per-endpoint
@@ -1628,7 +1628,7 @@ ends in an endpoint word. Scenario B needs no such pattern.
     done
   }
   ```
-- [ ] In `apply_coredns_override`, compute the block only for scenario C
+- [x] In `apply_coredns_override`, compute the block only for scenario C
   (all nodes unexposed, HLF network domain not cluster-local), and insert it
   right after `ready`, before the existing wildcard rewrites:
   ```bash
@@ -1656,8 +1656,8 @@ ends in an endpoint word. Scenario B needs no such pattern.
           kubernetes ${CLUSTER_DOMAIN} in-addr.arpa ip6.arpa { ... unchanged ... }
           ...
   ```
-- [ ] Run `bash -n .github/scripts/kind_with_nginx.sh`.
-- [ ] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
+- [x] Run `bash -n .github/scripts/kind_with_nginx.sh`.
+- [x] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
   bootstrap with `EXPOSE_*=false` and check the six blocks and the unchanged
   wildcard / `hosts` lines.
 
@@ -1679,6 +1679,15 @@ ends in an endpoint word. Scenario B needs no such pattern.
   itself. The Ansible side reads it from that same Corefile
   (`network_domains`, sub-task 1.1), so both always agree.
 
+**Checked on 2026-10-29** (check 1.8 below, collection built from the
+sub-task 1.6 commit): the six blocks only in C; the scenario C run exits 0
+with every in-cluster call to a node (operator enrollment, console, peer to
+orderer, gossip, chaincode) going to its per-endpoint Service; from a pod,
+all 16 node names resolve to the ClusterIP of their own Service; the console
+name still resolves to the nginx ClusterIP (the answer is named
+`host.ingress.internal`: the existing wildcard has no `answer` rule, as
+before this sub-task).
+
 ### ✋  check 1.8
 
 **Proves:** the six rules exist only in scenario C, come before the
@@ -1688,9 +1697,11 @@ still goes to nginx.
 1. `bash -n .github/scripts/kind_with_nginx.sh`.
 2. The helper alone, no cluster:
    ```bash
-   bash -c 'source <(sed -n "/^coredns_endpoint_rewrites()/,/^}/p" .github/scripts/kind_with_nginx.sh)
+   bash -c 'eval "$(sed -n "/^coredns_endpoint_rewrites()/,/^}/p" .github/scripts/kind_with_nginx.sh)"
             coredns_endpoint_rewrites default 127-0-0-1.nip.io cluster.local'
    ```
+   (`eval`, not `source <(...)`: the bash 3.2 of macOS sources an empty file
+   from a process substitution, and the function is then not found.)
    Expected: six `rewrite stop` blocks (`ca`, `peer`, `orderer`,
    `operations`, `grpcweb`, `admin`); the `operations` one is the example
    above.
@@ -1707,9 +1718,13 @@ still goes to nginx.
    change (`kubectl -n kube-system get pods -l k8s-app=kube-dns`).
 4. A and B leave CoreDNS as today: repeat step 3 with no `EXPOSE_*` (A),
    then with `EXPOSE_*=false HLF_NETWORK_DOMAIN=cluster.local` (B).
-   Expected: no `rewrite stop` block in either. End with the C cluster.
+   Expected: no `rewrite stop` block in either. End with the C cluster
+   (running A, then B, then C saves one cluster creation). Right after the
+   rollout, the old CoreDNS pods can still be listed while they terminate.
 5. End to end in C: `.github/scripts/deploy-console.sh` (console exposed),
-   then **Scenario C run**. Expected: exit 0.
+   then **Scenario C run**. Expected: exit 0. The installed collection must
+   contain sub-task 1.6 (this branch alone does not create the Services):
+   **Rebuild** from the 1.6 branch, or after 1.6 is merged.
 6. Resolution from inside the cluster:
    ```bash
    PEER_OPS=$(kubectl get svc -n "$NS" -l "$SEL,fabric-ansible-collection/component=peer,fabric-ansible-collection/endpoint=operations" -o jsonpath='{.items[0].metadata.name}')

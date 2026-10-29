@@ -79,6 +79,13 @@ These rules are assumptions, so the role checks them: after the module call, eve
 
 On a rerun, the node exists already, so its ``<cr_name>`` is read from its URL instead: the organization roles get the node with ``certificate_authority_info``, ``peer_info`` or ``ordering_service_info`` before they create the Services, and pass its URL in ``k8s_endpoint_services_existing_urls``. They do the same before they delete a node, so that the delete tasks find its Services.
 
+Ingresses of the nodes
+----------------------
+
+The operator also creates an nginx Ingress for every node, and has no setting to turn it off. Even when a node is not exposed, nginx still forwards a client that sends the right host name. With ``neutralize_node_ingresses: true``, the organization roles run the role with ``tasks_from: neutralize_ingress`` after each module call, for each component that is not exposed. These tasks set ``spec.ingress.class`` of the custom resource of each node to ``unexposed_ingress_class`` (``none`` by default), a class that no controller serves, and wait until the operator has rebuilt the Ingresses with that class. The Ingress is kept, but nginx no longer serves it. The pods of a CA and of an ordering node are not restarted; the operator rolls out a new pod for a peer, and the tasks wait until it is ready.
+
+The names of the custom resources are read from the URLs returned by the module call. Between the creation of a node and this change, its endpoints can be reached through nginx.
+
 Role variables
 --------------
 
@@ -123,7 +130,13 @@ You can override these variables in your playbook. The organization roles set th
      - The endpoints of each component and the native port of each one.
    * - ``k8s_endpoint_services_urls``
      - ``[]``
-     - The URLs returned by the module call, to check when the role runs with ``tasks_from: verify``.
+     - The URLs returned by the module call, to check when the role runs with ``tasks_from: verify``, and to read the names of the custom resources from with ``tasks_from: neutralize_ingress``.
+   * - ``k8s_endpoint_services_ingress_class``
+     - ``none``
+     - The Ingress class set on the custom resources of the nodes with ``tasks_from: neutralize_ingress``. The organization roles pass ``unexposed_ingress_class``.
+   * - ``k8s_endpoint_services_wait_timeout``
+     - ``600``
+     - The number of seconds that ``tasks_from: neutralize_ingress`` waits for the nodes to be ready again.
 
 The Services carry the label ``app.kubernetes.io/managed-by: fabric-ansible-collection``, so you can list them:
 

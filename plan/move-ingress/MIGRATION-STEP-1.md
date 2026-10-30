@@ -1525,7 +1525,7 @@ neutralization is in  check 1.9.
 <a id="subtask-1-8"></a>
 ## Sub-task 1.8 — CoreDNS per-endpoint-type rewrites for the `expose-none` CI leg
 
-**Scenarios:** [C](./SCENARIOS-MERMAID.md#scenario-c) only; [A](./SCENARIOS-MERMAID.md#scenario-a) and [B](./SCENARIOS-MERMAID.md#scenario-b) unchanged.
+**Scenarios:** [C](./SCENARIOS-MERMAID.md#scenario-c) for the endpoint rules; in [A](./SCENARIOS-MERMAID.md#scenario-a) and [B](./SCENARIOS-MERMAID.md#scenario-b), only the existing wildcards change (`\.$` anchor).
 
 **Intent:** When `expose_*: false` and the node FQDNs are **not**
 cluster-local (scenario C: `hlf_network_domain` left at `exposed_domain`, in
@@ -1562,7 +1562,7 @@ The dialled hostname stays the original FQDN, so TLS SANs remain valid and no
   during `build_network.sh`.
 - The existing `Corefile` content (the `localho.st` / nip.io wildcards to
   `host.ingress.internal`, the `hosts` block, the `kubernetes` plugin) is
-  **kept**. The endpoint rules are inserted **before** the wildcards. With
+  **kept**; only the wildcards get the `\.$` anchor (below). The endpoint rules are inserted **before** the wildcards. With
   rewrite's default `stop` behaviour, the first matching rule wins, so
   endpoint FQDNs never reach the wildcard, while the console FQDN
   (`-console`, `-proxy`, matching no endpoint rule) still goes to nginx.
@@ -1571,14 +1571,24 @@ The dialled hostname stays the original FQDN, so TLS SANs remain valid and no
   (default `cluster.local`) in both places.
 - Each `name regex` rule has a matching `answer name` rule so that clients
   receive an answer for the name they asked for.
+- Every regex, the existing wildcards included, ends with `\.$` (CoreDNS
+  names end with a dot). A pod has `ndots:5`, so glibc first asks
+  `<name>.<search domain>`, e.g. `<name>.default.svc.cluster.local.`. An
+  unanchored rule rewrites that query too and answers it under another name;
+  glibc (`getaddrinfo`, used by Python and so by the in-cluster runner of
+  sub-task 1.9) drops that answer and stops: `Name or service not known`.
+  Anchored, the search-domain queries get `NXDOMAIN` and glibc goes on to the
+  name itself. The Fabric nodes (Go resolver), busybox `nslookup` and musl
+  `curl` accept the mismatched answer, which is why the unanchored rules
+  passed check 1.8 at first.
 
 **Generated rule (one per endpoint type).** Example for namespace `default`,
 HLF network domain `127-0-0-1.nip.io` and endpoint type `operations`:
 
 ```
 rewrite stop {
-    name regex ^(default-[a-z0-9]+-operations)\.127-0-0-1\.nip\.io {1}.default.svc.cluster.local
-    answer name ^(default-[a-z0-9]+-operations)\.default\.svc\.cluster\.local {1}.127-0-0-1.nip.io
+    name regex ^(default-[a-z0-9]+-operations)\.127-0-0-1\.nip\.io\.$ {1}.default.svc.cluster.local
+    answer name ^(default-[a-z0-9]+-operations)\.default\.svc\.cluster\.local\.$ {1}.127-0-0-1.nip.io
 }
 ```
 
@@ -1590,7 +1600,8 @@ ends in an endpoint word. Scenario B needs no such pattern.
 **Expected outcomes:**
 - In the `expose-none` leg (scenario C), the CoreDNS ConfigMap contains six
   endpoint rewrite blocks ahead of the existing wildcards. In the
-  `expose-all` and `expose-none-internal` (scenario B) legs, it is unchanged.
+  `expose-all` and `expose-none-internal` (scenario B) legs, it has no
+  endpoint block; only the wildcards get the `\.$` anchor.
 - From an in-cluster pod, `nslookup <ns>-<peer>-operations.<domain>` returns
   the ClusterIP of Service `<ns>-<peer>-operations`, which is neither the
   nginx ClusterIP nor the `<ns>-<peer>-peer` ClusterIP.
@@ -1620,9 +1631,9 @@ ends in an endpoint word. Scenario B needs no such pattern.
     local endpoint
     for endpoint in ca peer orderer operations grpcweb admin; do
       printf '        rewrite stop {\n'
-      printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s {1}.%s.svc.%s\n' \
+      printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s\\.$ {1}.%s.svc.%s\n' \
         "${ns}" "${endpoint}" "${domain_re}" "${ns}" "${cluster_domain}"
-      printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s {1}.%s\n' \
+      printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s\\.$ {1}.%s\n' \
         "${ns}" "${endpoint}" "${ns}" "${cluster_domain_re}" "${domain}"
       printf '        }\n'
     done
@@ -1650,16 +1661,18 @@ ends in an endpoint word. Scenario B needs no such pattern.
           }
           ready
   ${ENDPOINT_REWRITES}
-          rewrite name regex (.*)\.localho\.st host.ingress.internal
-          rewrite name regex (.*)\.${NIP_DOMAIN} host.ingress.internal
+          rewrite name regex (.*)\.localho\.st\.$ host.ingress.internal
+          rewrite name regex (.*)\.${NIP_DOMAIN}\.$ host.ingress.internal
           hosts { ... unchanged ... }
           kubernetes ${CLUSTER_DOMAIN} in-addr.arpa ip6.arpa { ... unchanged ... }
           ...
   ```
 - [x] Run `bash -n .github/scripts/kind_with_nginx.sh`.
 - [x] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
-  bootstrap with `EXPOSE_*=false` and check the six blocks and the unchanged
-  wildcard / `hosts` lines.
+  bootstrap with `EXPOSE_*=false` and check the six blocks, the anchored
+  wildcards and the unchanged `hosts` lines.
+- [x] Anchor every regex with `\.$`, the two wildcards included (found by
+  check 1.9, see below).
 
 **Relevant context:**
 - Only CA, peer and orderer get endpoint rules. The console keeps resolving
@@ -1688,6 +1701,23 @@ name still resolves to the nginx ClusterIP (the answer is named
 `host.ingress.internal`: the existing wildcard has no `answer` rule, as
 before this sub-task).
 
+**Found by check 1.9 on 2026-10-29:** in scenario C the in-cluster runner
+(Python, glibc) failed at its first CA wait with
+`<urlopen error [Errno -2] Name or service not known>`, while the CA was
+up. The unanchored rules also matched the search-domain query
+`<name>.default.svc.cluster.local.` and answered it as `<name>.`; glibc
+dropped the answer and stopped there. The absolute name (`<name>.`) did
+resolve, and the busybox and curl lookups of this check do not use glibc,
+hence the pass above. Anchoring only the six blocks is not enough: the
+search-domain query then falls through to the unanchored nip.io wildcard,
+which answers it as `host.ingress.internal`, with the same failure. With
+every regex anchored, `getaddrinfo` returns the Service ClusterIP and
+`/cainfo` answers 200 from a glibc pod (wait 30 s after the reload for the
+CoreDNS cache to expire), and the whole scenario C run of check 1.9
+completes from inside the cluster. The console name still does not resolve from a
+glibc pod (the wildcard has no `answer` rule, as before); nothing needs it:
+in-cluster clients use the console's Service URL.
+
 ### ✋  check 1.8
 
 **Proves:** the six rules exist only in scenario C, come before the
@@ -1712,11 +1742,11 @@ still goes to nginx.
    EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false .github/scripts/kind_with_nginx.sh
    kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}'
    ```
-   Expected: the six blocks right after `ready`, then the unchanged
-   `localho.st` / nip.io wildcards, `hosts` block and
+   Expected: the six blocks right after `ready`, every regex ending with
+   `\.$`, then the `localho.st` / nip.io wildcards (anchored), the `hosts` block and
    `kubernetes cluster.local ...` line. The CoreDNS pods are younger than the
    change (`kubectl -n kube-system get pods -l k8s-app=kube-dns`).
-4. A and B leave CoreDNS as today: repeat step 3 with no `EXPOSE_*` (A),
+4. A and B get no endpoint rule: repeat step 3 with no `EXPOSE_*` (A),
    then with `EXPOSE_*=false HLF_NETWORK_DOMAIN=cluster.local` (B).
    Expected: no `rewrite stop` block in either. End with the C cluster
    (running A, then B, then C saves one cluster creation). Right after the
@@ -1733,11 +1763,16 @@ still goes to nginx.
    indns "$PEER_OPS.$DOMAIN_A"
    indns "default-hlf-console-console.$DOMAIN_A"
    incluster curl -sk "https://$PEER_OPS.$DOMAIN_A/healthz"
+   kubectl run "glibc-$RANDOM" -n "$NS" --image=debian:12-slim --restart=Never \
+     --rm -i --quiet --command -- getent hosts "$PEER_OPS.$DOMAIN_A"
    ```
    Expected: the operations name resolves to the ClusterIP of `$PEER_OPS`
    (not the `-peer` Service, not nginx); the console name resolves to the
    nginx ClusterIP; `/healthz` returns `{"status":"OK"}` through the
-   original name.
+   original name. `getent` (glibc, like the Python of the 1.9 runner)
+   prints the ClusterIP of `$PEER_OPS`. busybox and curl (musl) accept a
+   wrongly named answer, glibc does not: with an unanchored regex,
+   `getent` prints nothing and exits 2 (tried on 2026-10-29).
 7. **Destroy**.
 8. **Changed files vs the merge-conflict analysis.**
    ```bash

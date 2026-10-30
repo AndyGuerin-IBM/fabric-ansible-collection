@@ -120,9 +120,9 @@ coredns_endpoint_rewrites() {
   local endpoint
   for endpoint in ca peer orderer operations grpcweb admin; do
     printf '        rewrite stop {\n'
-    printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s {1}.%s.svc.%s\n' \
+    printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s\\.$ {1}.%s.svc.%s\n' \
       "${ns}" "${endpoint}" "${domain_re}" "${ns}" "${cluster_domain}"
-    printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s {1}.%s\n' \
+    printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s\\.$ {1}.%s\n' \
       "${ns}" "${endpoint}" "${ns}" "${cluster_domain_re}" "${domain}"
     printf '        }\n'
   done
@@ -147,6 +147,10 @@ function apply_coredns_override() {
   # cluster-local): send each endpoint name to its per-endpoint Service, not to
   # nginx. These rules come before the wildcards: the first matching rewrite
   # wins, and the console name matches none of them.
+  # Every regex ends with \.$ (CoreDNS names end with a dot): with ndots:5 a
+  # pod first asks <name>.<search domain>, e.g. <name>.default.svc.cluster.local.
+  # An unanchored rule answers that query too, under another name, and glibc
+  # (getaddrinfo) drops the answer and stops: "Name or service not known".
   HLF_NETWORK_DOMAIN=${HLF_NETWORK_DOMAIN:-${NIP_DOMAIN}}
   ENDPOINT_REWRITES=""
   if [[ "${EXPOSE_CA:-true}" == "false" \
@@ -173,8 +177,8 @@ data:
         }
         ready
 ${ENDPOINT_REWRITES}
-        rewrite name regex (.*)\.localho\.st host.ingress.internal
-        rewrite name regex (.*)\.${NIP_DOMAIN} host.ingress.internal
+        rewrite name regex (.*)\.localho\.st\.$ host.ingress.internal
+        rewrite name regex (.*)\.${NIP_DOMAIN}\.$ host.ingress.internal
         hosts {
           ${CLUSTER_IP} host.ingress.internal
           fallthrough

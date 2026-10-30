@@ -49,6 +49,29 @@
   vars:
       network_domains_namespace: "{{ k8s_namespace | default('') }}"
 
+- name: Get the CA if it exists already (unexposed)
+  hyperledger.fabric_ansible_collection.certificate_authority_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ca_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: endorsing_organization_ca_info
+  when: not expose_ca | bool
+
+- name: Create per-endpoint Services for the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [endorsing_organization_ca_info.certificate_authority.api_url | default('')] }}"
+  when: not expose_ca | bool
+
 - name: Create certificate authority
   hyperledger.fabric_ansible_collection.certificate_authority:
       state: "{{ state }}"
@@ -81,6 +104,40 @@
       version: "{{ ca_version | default(omit) }}"
       zone: "{{ ca_zone | default(omit) }}"
       wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: endorsing_organization_ca
+
+- name: Check the CA URLs use the HLF node domain (V5)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.network_domains
+      tasks_from: verify_urls
+  vars:
+      network_domains_urls: >-
+          {{ [endorsing_organization_ca.certificate_authority.api_url, endorsing_organization_ca.certificate_authority.operations_url] }}
+
+- name: Verify per-endpoint Services for the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: verify
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [endorsing_organization_ca_info.certificate_authority.api_url | default('')] }}"
+      k8s_endpoint_services_urls: >-
+          {{ [endorsing_organization_ca.certificate_authority.api_url, endorsing_organization_ca.certificate_authority.operations_url] }}
+  when: not expose_ca | bool
+
+- name: Neutralize the Ingress of the CA (unexposed, opt-in)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: neutralize_ingress
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_ingress_class: "{{ unexposed_ingress_class }}"
+      k8s_endpoint_services_urls: >-
+          {{ [endorsing_organization_ca.certificate_authority.api_url, endorsing_organization_ca.certificate_authority.operations_url] }}
+  when: neutralize_node_ingresses | bool and not expose_ca | bool
 
 - name: Enroll certificate authority admin
   hyperledger.fabric_ansible_collection.enrolled_identity:
@@ -161,6 +218,32 @@
       admins:
           - "{{ endorsing_organization_org_admin.enrolled_identity.cert | default(omit) }}"
 
+- name: Get the peers that exist already (unexposed)
+  hyperledger.fabric_ansible_collection.peer_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ peer_name if peers == 1 else peer_name ~ item }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  loop: "{{ range(1, peers + 1, 1) | list }}"
+  register: endorsing_organization_peers_info
+  when: not expose_peer | bool
+
+- name: Create per-endpoint Services for the peers (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: peer
+      k8s_endpoint_services_display_name: "{{ peer_name }}"
+      k8s_endpoint_services_count: "{{ peers }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ endorsing_organization_peers_info.results | map(attribute='peer', default={}) | map(attribute='api_url', default='') | list }}
+  when: not expose_peer | bool
+
 - name: Create peer
   hyperledger.fabric_ansible_collection.peer:
       state: "{{ state }}"
@@ -183,6 +266,7 @@
       version: "{{ peer_version | default(omit) }}"
       zone: "{{ peer_zones[0] | default(omit) }}"
       wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: endorsing_organization_peer
   when: peers == 1
 
 - name: Create multiple peers
@@ -211,3 +295,47 @@
   loop_control:
       index_var: peer_idx
   when: peers > 1
+  register: endorsing_organization_peers
+
+- name: List the URLs returned for the peers
+  set_fact:
+      endorsing_organization_peer_urls: >-
+          {{ endorsing_organization_peers_returned | map(attribute='api_url', default='') | list
+             + endorsing_organization_peers_returned | map(attribute='operations_url', default='') | list
+             + endorsing_organization_peers_returned | map(attribute='grpcwp_url', default='') | list }}
+  vars:
+      endorsing_organization_peers_returned: >-
+          {{ [endorsing_organization_peer.peer] if peers == 1
+             else endorsing_organization_peers.results | map(attribute='peer') | list }}
+
+- name: Check the peer URLs use the HLF node domain (V5)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.network_domains
+      tasks_from: verify_urls
+  vars:
+      network_domains_urls: "{{ endorsing_organization_peer_urls }}"
+
+- name: Verify per-endpoint Services for the peers (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: verify
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: peer
+      k8s_endpoint_services_display_name: "{{ peer_name }}"
+      k8s_endpoint_services_count: "{{ peers }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ endorsing_organization_peers_info.results | map(attribute='peer', default={}) | map(attribute='api_url', default='') | list }}
+      k8s_endpoint_services_urls: "{{ endorsing_organization_peer_urls }}"
+  when: not expose_peer | bool
+
+- name: Neutralize the Ingresses of the peers (unexposed, opt-in)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: neutralize_ingress
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: peer
+      k8s_endpoint_services_ingress_class: "{{ unexposed_ingress_class }}"
+      k8s_endpoint_services_urls: "{{ endorsing_organization_peer_urls }}"
+  when: neutralize_node_ingresses | bool and not expose_peer | bool

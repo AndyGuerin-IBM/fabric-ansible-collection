@@ -1,0 +1,17 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+- name: Work out the operator CR names
+  ansible.builtin.include_tasks: cr_names.yml
+
+- name: Delete the per-endpoint Services of the given instances
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Service
+    namespace: "{{ k8s_endpoint_services_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/managed-by=fabric-ansible-collection
+      - fabric-ansible-collection/instance={{ item }}
+  loop: "{{ k8s_endpoint_services_effective_cr_names }}"

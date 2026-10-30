@@ -1,0 +1,42 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+# The operator CR names of the nodes, in k8s_endpoint_services_effective_cr_names.
+# The console, not the operator, derives a CR name from the display name, so
+# these rules are assumptions (S1 and S2 of MIGRATION-STEP-1.md, sub-task 1.6):
+# tasks/verify.yml checks them against the URLs the console returns. On a
+# rerun, the CR name of a node that exists already is read from its URL.
+- name: Work out the operator CR names
+  ansible.builtin.set_fact:
+    k8s_endpoint_services_effective_cr_names: >-
+      {{ k8s_endpoint_services_cr_names
+         if k8s_endpoint_services_cr_names | length > 0
+         else _ks_derived
+              | zip_longest(_ks_read, fillvalue='')
+              | map('select') | map('list') | map('last')
+              | list }}
+  vars:
+    _ks_numbers: "{{ range(1, k8s_endpoint_services_count | int + 1) | map('string') | list }}"
+    _ks_base: "{{ k8s_endpoint_services_display_name | lower | regex_replace(k8s_endpoint_services_cr_name_regex, '') }}"
+    # Ordering nodes: <ordering service CR name><suffix><i>. Several peers: the
+    # number is part of the display name.
+    _ks_derived: >-
+      {{ (_ks_numbers | map('regex_replace', '^', _ks_base ~ k8s_endpoint_services_orderer_node_suffix) | list)
+         if k8s_endpoint_services_component == 'orderer'
+         else ([_ks_base] if k8s_endpoint_services_count | int == 1
+               else _ks_numbers
+                    | map('regex_replace', '^', k8s_endpoint_services_display_name)
+                    | map('lower')
+                    | map('regex_replace', k8s_endpoint_services_cr_name_regex, '')
+                    | list) }}
+    # The first label of a URL is <namespace>-<cr_name>-<endpoint>: drop the
+    # namespace prefix and the endpoint suffix. A CR name has no '-'. An empty
+    # URL gives an empty name, and the derived name is kept for that node.
+    _ks_read: >-
+      {{ k8s_endpoint_services_existing_urls
+         | map('regex_replace', '^[a-z]+://', '')
+         | map('regex_replace', '[.:/].*$', '')
+         | map('regex_replace', '^' ~ k8s_endpoint_services_namespace ~ '-', '')
+         | map('regex_replace', '-[^-]*$', '')
+         | list }}

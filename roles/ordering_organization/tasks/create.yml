@@ -122,6 +122,18 @@
           {{ [ordering_organization_ca.certificate_authority.api_url, ordering_organization_ca.certificate_authority.operations_url] }}
   when: not expose_ca | bool
 
+- name: Neutralize the Ingress of the CA (unexposed, opt-in)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: neutralize_ingress
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_ingress_class: "{{ unexposed_ingress_class }}"
+      k8s_endpoint_services_urls: >-
+          {{ [ordering_organization_ca.certificate_authority.api_url, ordering_organization_ca.certificate_authority.operations_url] }}
+  when: neutralize_node_ingresses | bool and not expose_ca | bool
+
 - name: Enroll certificate authority admin
   hyperledger.fabric_ansible_collection.enrolled_identity:
       state: "{{ state }}"
@@ -278,3 +290,14 @@
           {{ ordering_organization_os_info.ordering_service | default([]) | map(attribute='api_url') | list }}
       k8s_endpoint_services_urls: "{{ ordering_organization_os_urls }}"
   when: not expose_orderer | bool
+
+- name: Neutralize the Ingresses of the ordering nodes (unexposed, opt-in)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: neutralize_ingress
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: orderer
+      k8s_endpoint_services_ingress_class: "{{ unexposed_ingress_class }}"
+      k8s_endpoint_services_urls: "{{ ordering_organization_os_urls }}"
+  when: neutralize_node_ingresses | bool and not expose_orderer | bool

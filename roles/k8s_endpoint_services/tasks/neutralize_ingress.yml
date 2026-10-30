@@ -1,0 +1,71 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+# Opt-in (neutralize_node_ingresses): the operator creates an nginx Ingress for
+# every node, with no setting to turn it off. Give the node CRs an Ingress class
+# that no controller serves: the Ingress is kept, but nginx no longer forwards
+# to the node. The class is set on the CR, not on the Ingress: the operator
+# rebuilds the Ingress from the CR on every spec change.
+- name: Neutralize the Ingresses of the nodes
+  vars:
+    _ks_kind: "{{ {'ca': 'IBPCA', 'peer': 'IBPPeer', 'orderer': 'IBPOrderer'}[k8s_endpoint_services_component] }}"
+    # The CR names are read from the URLs the console returned: the first
+    # label is <namespace>-<cr_name>-<endpoint>, and a CR name has no '-'.
+    _ks_url_cr_names: >-
+      {{ k8s_endpoint_services_urls
+         | select
+         | map('regex_replace', '^[a-z]+://', '')
+         | map('regex_replace', '[.:/].*$', '')
+         | map('regex_replace', '^' ~ k8s_endpoint_services_namespace ~ '-', '')
+         | map('regex_replace', '-[^-]*$', '')
+         | unique
+         | list }}
+  block:
+    - name: Set the Ingress class of the node CRs
+      kubernetes.core.k8s:
+        state: patched
+        api_version: ibp.com/v1beta1
+        kind: "{{ _ks_kind }}"
+        name: "{{ item }}"
+        namespace: "{{ k8s_endpoint_services_namespace }}"
+        merge_type: merge
+        definition:
+          spec:
+            ingress:
+              class: "{{ k8s_endpoint_services_ingress_class }}"
+      loop: "{{ _ks_url_cr_names }}"
+
+    - name: Wait until the operator has rebuilt the Ingresses of the nodes
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: Ingress
+        namespace: "{{ k8s_endpoint_services_namespace }}"
+        label_selectors:
+          - "{{ k8s_endpoint_services_selector_key }}={{ item }}"
+      register: _ks_ingresses
+      until: >-
+        _ks_ingresses.resources | length > 0
+        and _ks_ingresses.resources
+            | map(attribute='spec.ingressClassName', default='')
+            | reject('equalto', k8s_endpoint_services_ingress_class)
+            | list | length == 0
+      retries: 30
+      delay: 2
+      loop: "{{ _ks_url_cr_names }}"
+
+    # A spec change of an IBPPeer makes the operator roll out a new peer pod
+    # (the CA and the ordering nodes keep theirs). Wait until every node is
+    # ready again, so that the next tasks don't reach a restarting node.
+    - name: Wait until the Deployments of the nodes are ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ k8s_endpoint_services_namespace }}"
+        label_selectors:
+          - "{{ k8s_endpoint_services_selector_key }}={{ item }}"
+        wait: true
+        wait_timeout: "{{ k8s_endpoint_services_wait_timeout }}"
+      register: _ks_deployments
+      failed_when: _ks_deployments.resources | length == 0
+      loop: "{{ _ks_url_cr_names }}"

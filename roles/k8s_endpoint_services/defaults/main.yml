@@ -46,5 +46,12 @@ k8s_endpoint_services_endpoints:
     - {endpoint: operations, target_port: 8443}
     - {endpoint: grpcweb, target_port: 7443}
 
-# URLs returned by the module call, to check with tasks_from: verify.
+# URLs returned by the module call, to check with tasks_from: verify, and to
+# read the CR names from with tasks_from: neutralize_ingress.
 k8s_endpoint_services_urls: []
+
+# Ingress class set on the node CRs by tasks_from: neutralize_ingress. No
+# controller serves it.
+k8s_endpoint_services_ingress_class: none
+# Seconds to wait for the nodes to be ready again after that change.
+k8s_endpoint_services_wait_timeout: 600

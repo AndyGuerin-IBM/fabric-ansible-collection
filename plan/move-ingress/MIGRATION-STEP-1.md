@@ -2024,7 +2024,10 @@ USER root
 RUN microdnf install -y jq perl-Digest-SHA python3-pip && microdnf clean -y all
 USER 7051
 # Python yq (run-tests.sh uses `yq -yi`, which mikefarah's yq does not support).
-RUN python3.9 -m pip install --user yq
+# cryptography as in requirements.txt: the base image installs the latest one,
+# and fabric-sdk-py then fails to enroll ("curve must be an EllipticCurve
+# instance").
+RUN python3.9 -m pip install --user yq 'cryptography==42.0.8'
 # Writable copy of the tests: run-tests.sh does `cd tutorial` relative to the repo root.
 COPY --chown=7051:0 .github/scripts /workspace/.github/scripts
 COPY --chown=7051:0 tutorial /workspace/tutorial
@@ -2051,6 +2054,16 @@ CMD [ ".github/scripts/run-tests.sh" ]
   nodes; align them in Step 0 (already listed in REVIEW-MIGRATION-PLAN-STEP-0.md).
 - `run-tests.sh` must work without `_cfg/console-env.sh` (it already falls
   back to environment variables) and skip the `.venv` activation when absent.
+- **cryptography pin (found 2026-10-29).** The root `Dockerfile` installs the
+  latest `cryptography` (50.0.2 that day), not the `42.0.8` of
+  `requirements.txt`. With it, the first enrollment (`Enroll certificate
+  authority admin`, fabric-sdk-py) fails with `curve must be an
+  EllipticCurve instance`. The runner image pins `42.0.8`, which fixes it.
+  The published collection image has the same problem: fix the root
+  `Dockerfile` separately (outside Step 1).
+- The base image downloads an `amd64` `kubectl`. The Job does not use it
+  (`kubernetes.core` talks to the API directly), so it does not matter on
+  arm64.
 
 **RBAC** — `.github/k8s/ansible-runner-rbac.yml`:
 
@@ -2074,6 +2087,10 @@ rules:
   # Wait for the Ingress class after neutralization (sub-task 1.7)
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
+    verbs: [get, list]
+  # Wait for the node Deployments after neutralization (sub-task 1.7): read only
+  - apiGroups: [apps]
+    resources: [deployments]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -2104,7 +2121,10 @@ system:serviceaccount:default:ansible-runner`: allowed to create/delete
 Services, patch `ibppeers`/`ibporderers`, read Ingresses and
 `kube-system/configmaps/coredns`; denied any other `kube-system` ConfigMap,
 creating `ibppeers` or Deployments, and reading Secrets. Both manifests pass
-`kubectl apply --dry-run=server`.
+`kubectl apply --dry-run=server`. The `deployments` rule was added on
+2026-10-29: since sub-task 1.7, `neutralize_ingress.yml` waits for the node
+Deployment with `k8s_info`, which needs `get`/`list` on Deployments
+(creating one stays denied).
 
 The Job never creates CAs, peers or orderers itself: it asks the console's
 REST API, and the console's deployer and the operator create them with their
@@ -2140,7 +2160,7 @@ spec:
 `API_AUTHTYPE`, `API_KEY`, `K8S_NAMESPACE`, `INGRESS_TYPE`, `EXPOSE_CONSOLE`,
 `EXPOSE_CA`, `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSED_DOMAIN`,
 `HLF_NETWORK_DOMAIN`, `CLUSTER_DOMAIN`, `NEUTRALIZE_NODE_INGRESSES`,
-`WAIT_TIMEOUT`. The console serves
+`CCAAS_PACKAGE_ONLY=true` (below), `WAIT_TIMEOUT`. The console serves
 **HTTPS** on 3000 with a certificate for the `exposed_domain` host (checked
 2026-10-16, check 4); the modules don't verify certificates, so this works.
 
@@ -2151,31 +2171,47 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
 `RUN_TESTS_MODE=destroy` (both options added to `run-tests.sh` in sub-task
 1.3). The CI step generates `TEST_RUN_ID` once and passes it to both Jobs.
 
+**Chaincode server (found 2026-10-29).** The deploy step of `run-tests.sh`
+calls `tutorial/deploy_chaincode_server.sh`, which builds and pushes the
+chaincode image with `docker`, then creates its Deployment and Service.
+The Job has neither `docker` nor the right to create a Deployment (J2), so:
+- the CI runner runs `deploy_chaincode_server.sh deploy` **before** the Job,
+  and `deploy_chaincode_server.sh destroy` **after** the destroy Job;
+- inside the Job, `CCAAS_PACKAGE_ONLY=true` makes the script only write
+  (deploy) or remove (destroy) the chaincode package that the install
+  playbooks read. The package only holds the server address
+  (`<server>.<ns>:9999`), so the runner and the Job build the same package
+  and the same package ID, which the server was started with.
+
 **Todo list:**
-- [ ] Add a `scenario` matrix dimension to the `fvtest` job in
+- [x] Add a `scenario` matrix dimension to the `fvtest` job in
   `.github/workflows/fvtest.yml` with values
   `[expose-all, expose-none, expose-none-internal]`. Set `fail-fast: false`
   on the matrix.
-- [ ] For `expose-all`: set `EXPOSE_CONSOLE=true`, `EXPOSE_CA=true`,
+- [x] For `expose-all`: set `EXPOSE_CONSOLE=true`, `EXPOSE_CA=true`,
   `EXPOSE_PEER=true`, `EXPOSE_ORDERER=true` in `$GITHUB_ENV`. Keep existing
   runner-side `run-tests.sh` invocation — this path is unchanged.
-- [ ] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
+- [x] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
   `$GITHUB_ENV`, and `EXPOSED_DOMAIN` to the console domain: the organization
   roles build the node FQDNs of scenario C from it (sub-task 1.1). Keep
   `INGRESS_TYPE=nginx`.
-- [ ] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
+- [x] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
   `CLUSTER_DOMAIN` **before** `kind_with_nginx.sh`: since sub-task 1.8 the
   script reads them to write the CoreDNS rules, before any playbook runs.
   They must match what `run-tests.sh` writes to `common-vars.yml` (sub-task
   1.3).
-- [ ] For `expose-none-internal`: same, plus
+- [x] For `expose-none-internal`: same without `EXPOSED_DOMAIN` (the node
+  FQDNs of scenario B don't use it), plus
   `HLF_NETWORK_DOMAIN=cluster.local` and `CLUSTER_DOMAIN=cluster.local`,
   exported before `kind_with_nginx.sh` and the console deployment (the
   console must be **created** with `spec.deployer.domain`, finding F1).
-- [ ] Create `.github/docker/ansible-runner/Dockerfile`,
+- [x] Create `.github/docker/ansible-runner/Dockerfile`,
   `.github/k8s/ansible-runner-rbac.yml` and `.github/k8s/ansible-runner-job.yml`
   as above.
-- [ ] Add the following CI steps, each guarded by
+- [x] Create `.github/scripts/wait-job.sh` (step 5) and add
+  `CCAAS_PACKAGE_ONLY` to `tutorial/deploy_chaincode_server.sh`
+  (*Chaincode server* above).
+- [x] Add the following CI steps, each guarded by
   `if: matrix.scenario != 'expose-all'`:
   1. **Build and load the images**:
      ```bash
@@ -2184,7 +2220,9 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
      kind load docker-image ansible-runner:ci
      ```
   2. **Apply RBAC**: `kubectl apply -f .github/k8s/ansible-runner-rbac.yml`
-  3. **Create the Job inputs**:
+  3. **Deploy the chaincode server** on the runner (see *Chaincode server*):
+     `tutorial/deploy_chaincode_server.sh deploy`
+  4. **Create the Job inputs**:
      ```bash
      kubectl create configmap ansible-runner-env \
        --from-literal=API_ENDPOINT="https://${CONSOLE_NAME}.${K8S_NAMESPACE}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000" \
@@ -2198,51 +2236,114 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
        --from-literal=HLF_NETWORK_DOMAIN="${HLF_NETWORK_DOMAIN:-}" \
        --from-literal=CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}" \
        --from-literal=NEUTRALIZE_NODE_INGRESSES="${NEUTRALIZE_NODE_INGRESSES:-}" \
+       --from-literal=CCAAS_PACKAGE_ONLY=true \
        --from-literal=WAIT_TIMEOUT=1800
      kubectl create secret generic ansible-runner-auth --from-literal=API_SECRET="${API_SECRET}"
      ```
-  4. **Run the Job**: `kubectl apply -f .github/k8s/ansible-runner-job.yml`
-  5. **Wait for it** (fails fast on a failed Job):
+  5. **Run the Job and wait for it** (fails fast on a failed Job):
      ```bash
-     kubectl wait --for=jsonpath='{.status.conditions[?(@.status=="True")].type}'=Complete \
-       --timeout=60m job/ansible-runner \
-     || { kubectl get job ansible-runner -o jsonpath='{.status.conditions}'; exit 1; }
+     kubectl apply -f .github/k8s/ansible-runner-job.yml
+     .github/scripts/wait-job.sh ansible-runner 3600
      ```
+     `wait-job.sh <job> [timeout]` polls the Job conditions every 10 s: exit
+     0 on `Complete`, exit 1 with the conditions as soon as `Failed` is true,
+     exit 1 after the timeout.
   6. **Retrieve logs** (`if: always() && matrix.scenario != 'expose-all'`):
      `kubectl logs job/ansible-runner --all-containers`
   7. **Reachability assertions** (sub-task 1.10), network still alive.
   8. **Destroy** (`if: always() && matrix.scenario != 'expose-all'`): a
      second Job, `ansible-runner-destroy`, same image and inputs plus
-     `RUN_TESTS_MODE=destroy`; wait for it and print its logs like steps 5–6.
-- [ ] Add `name: FV test (nginx / ${{ matrix.scenario }})` to the job.
-- [ ] Run `yamllint` on the workflow and the two manifests.
-- [ ] Try the Job locally first on the KIND cluster used for the
+     `RUN_TESTS_MODE=destroy`, then the chaincode server:
+     ```bash
+     yq -y '.metadata.name = "ansible-runner-destroy"
+            | .spec.template.spec.containers[0].env += [{"name": "RUN_TESTS_MODE", "value": "destroy"}]' \
+       .github/k8s/ansible-runner-job.yml | kubectl apply -f -
+     status=0
+     .github/scripts/wait-job.sh ansible-runner-destroy 1800 || status=$?
+     kubectl logs job/ansible-runner-destroy --all-containers || true
+     tutorial/deploy_chaincode_server.sh destroy
+     exit "${status}"
+     ```
+- [x] Add `name: FV test (nginx / ${{ matrix.scenario }})` to the job.
+- [x] Run `yamllint` on the workflow and the two manifests.
+- [x] Try the Job locally first on the KIND cluster used for the
   URL-MANAGEMENT-NEW.md checks (scenario C needs no console change; scenario B
   needs the console re-created with `spec.deployer.domain`).
 
 **Relevant context:**
 - The `expose-all` leg is entirely unaffected by this sub-task — the `if:`
   conditions ensure the Job steps are skipped when `matrix.scenario == 'expose-all'`.
-- A `kubectl wait --for=condition=complete` alone waits the full timeout
-  when the Job fails; the `jsonpath` form above returns as soon as the Job
-  has any final condition, and the `||` branch reports it.
+- `kubectl wait` cannot fail fast on a Job. Both
+  `--for=condition=complete` and
+  `--for=jsonpath='{.status.conditions[?(@.status=="True")].type}'=Complete`
+  return only when the Job completes: on a failed Job they wait the whole
+  timeout (tried 2026-10-29: a failed Job, a 40 s timeout, `timed out
+  waiting for the condition` after 40 s). Hence `wait-job.sh` (step 5).
 - The Job image must be available inside the KIND cluster (`kind load
   docker-image`, `imagePullPolicy: Never`).
 - Each Job starts from a fresh copy of the image, so nothing patched by the
   first Job survives into the destroy Job. Both therefore run `run-tests.sh`,
-  which re-applies the same patching, with the **same** `TEST_RUN_ID` taken
-  from `ansible-runner-env`: the randomised org and node names (Step 0
-  stamping) are identical, and the destroy finds what the first Job
-  created.
+  which re-applies the same patching from the same `ansible-runner-env`, so
+  the destroy finds what the first Job created. Today `run-tests.sh` does
+  not read `TEST_RUN_ID` (only `run-tutorial-tests.sh` stamps names): the
+  org and node names are the fixed ones of the tutorial vars. The ConfigMap
+  still carries one `TEST_RUN_ID` for both Jobs, ready for the Step 0
+  stamping.
 - Gateway API (`ingress_type: gateway-api`) matrix legs are **not** added in
   this step; leave a comment stub for Step 2.
 - Reference full matrix design: MIGRATION-PLAN.md §5.3.4.
+
+**Checked on 2026-10-29** (check 1.9 steps 1 to 7 and 9, local KIND on
+arm64, runner image and collection built from 1.5 to 1.9 merged locally).
+`yamllint` is clean and both images build. Step 8 (GitHub Actions) waits
+for this branch to be pushed.
+- **Run again on 2026-11-02**, on this branch on top of the merged 1.5 to
+  1.8 (images rebuilt, same local KIND on arm64), `network_domains` rule
+  tests included. **Scenario A**, not run since the wildcards are anchored
+  (1.8): `run-tests.sh` exits 0, 19 recaps with `failed=0`, the destroy
+  leaves nothing. **B, C and B with `NEUTRALIZE_NODE_INGRESSES=true`**: same
+  results as below (Job `Complete`, 16 recaps with `failed=0`, the destroy
+  leaves nothing).
+- **Scenario B**, first end-to-end run (URL-MANAGEMENT-NEW.md §9 check 5):
+  the console is created with `spec.deployer.domain:
+  default.svc.cluster.local`; the Job completes in 10 min, the 16
+  playbooks (01 to 23, chaincode included) end with `failed=0`; the 7 nodes
+  have `spec.domain: default.svc.cluster.local` and URLs
+  `https://<ns>-<cr>-<endpoint>.default.svc.cluster.local:443`; 16
+  per-endpoint Services. The destroy Job completes in 1 min and leaves no
+  CR, no collection Service and no chaincode server. The first try had
+  failed at the first enrollment (cryptography pin, above).
+- **Scenario C**: the first try failed at the first CA wait,
+  `Name or service not known`. The 1.8 CoreDNS rules were not anchored
+  with `\.$`, and glibc, unlike the Go resolver of the nodes, drops the
+  answer they give to the search-domain query (details and fix in the
+  1.8 text). `wait-job.sh` exited 1 two seconds after the Job became
+  `Failed` (`BackoffLimitExceeded`), as intended. With the fix: six
+  blocks, the Job completes in 10 min, 16 playbooks with `failed=0`, nodes
+  on `127-0-0-1.nip.io`, 16 Services; the destroy Job completes and leaves
+  nothing.
+- **Scenario B with `NEUTRALIZE_NODE_INGRESSES=true`** (the full run
+  deferred from 1.7): the Job completes in 11 min (the peers roll out once,
+  see 1.7), 16 playbooks with `failed=0`. Before the destroy, the 6 node
+  Ingresses (3 CAs, 2 peers, the orderer node) and their CRs have class
+  `none`; the parent `IBPOrderer` (`orderingservice`) has no Ingress. The
+  destroy Job completes and leaves nothing.
+- **A destroy can hang** (open point, sub-task 1.6): in that failed C try,
+  the destroy Job stayed 30 min on `Get the CA if it exists (unexposed)`.
+  `delete.yml` reads the node URLs with the `*_info` modules, which wait for
+  the node's health up to `wait_timeout` (1800 s here), and the CA was
+  unreachable. It would go on after those 1800 s (`failed_when: false`),
+  but the CI wait gives up first. A short `wait_timeout` on these reads is
+  enough: they only need the URLs, which the console returns.
 
 ### ✋  check 1.9
 
 **Proves:** the runner image and its RBAC work, the Job runs the whole test
 suite from inside the cluster in B and in C, and the three CI legs pass.
-Steps 1 to 7 run locally, before anything is pushed.
+Steps 1 to 7 run locally, before anything is pushed. They need sub-tasks
+1.5 to 1.8 (merged, or merged into a local integration branch): the
+runner image is built from the working tree, so it holds the collection
+under test, and `kind_with_nginx.sh` must have the 1.8 rules.
 
 1. `yamllint .github/workflows/fvtest.yml .github/k8s/`; build both images
    (CI step 1, without `kind load` yet).
@@ -2264,25 +2365,41 @@ Steps 1 to 7 run locally, before anything is pushed.
    kubectl auth can-i get configmap/coredns -n kube-system --as "$SA"     # yes
    kubectl auth can-i create services -n default --as "$SA"               # yes
    kubectl auth can-i patch ibppeers.ibp.com -n default --as "$SA"        # yes
+   kubectl auth can-i get deployments.apps -n default --as "$SA"          # yes
    kubectl auth can-i get secrets -n default --as "$SA"                   # no
    kubectl auth can-i get configmap/kube-proxy -n kube-system --as "$SA"  # no
+   kubectl auth can-i create deployments.apps -n default --as "$SA"       # no
+   kubectl auth can-i create ibppeers.ibp.com -n default --as "$SA"       # no
    ```
-4. Run the Job: CI steps 3 to 6, with `CONSOLE_NAME=hlf-console` and
-   `K8S_NAMESPACE=default`. Expected: the wait ends with `Complete`; the
-   logs show build, join and deploy finishing, and
-   `hlf_node_domain: default.svc.cluster.local`.
-5. Destroy Job (CI step 8). Expected: `Complete`;
-   `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` and
-   `kubectl get svc -n "$NS" -l "$SEL"` find nothing. Before the next run,
-   delete the Jobs, `ansible-runner-env` and `ansible-runner-auth`.
+4. Run the Job: CI steps 3 to 6 (chaincode server, inputs, Job and wait,
+   logs), with `CONSOLE_NAME=hlf-console` and `K8S_NAMESPACE=default`; the
+   API values come from `_cfg/console-env.sh` (never echo them). Expected:
+   `job/ansible-runner: Complete`; every `PLAY RECAP` of the logs has
+   `failed=0`, through the chaincode playbooks; the node URLs in the logs
+   end with `.default.svc.cluster.local:443` (the domain itself is not
+   printed: `Set the HLF node domain` only shows `ok`); and
+   ```bash
+   kubectl get ibpca,ibppeer,ibporderer -n "$NS" -o custom-columns='KIND:.kind,NAME:.metadata.name,DOMAIN:.spec.domain'
+   ```
+   shows `default.svc.cluster.local` on every node.
+5. Destroy Job and chaincode server (CI step 8). Expected: `Complete`;
+   `kubectl get ibpca,ibppeer,ibporderer -n "$NS"`,
+   `kubectl get svc -n "$NS" -l "$SEL"` and
+   `kubectl get deploy -n "$NS" fabcar-ccaas` find nothing. Before the next
+   run, delete the Jobs, `ansible-runner-env` and `ansible-runner-auth`.
 6. Scenario C: steps 2 to 5 again with
-   `unset HLF_NETWORK_DOMAIN CLUSTER_DOMAIN`. Expected: `Complete` both
-   times; `hlf_node_domain` is the nip.io domain; CoreDNS has the six rules.
+   `unset HLF_NETWORK_DOMAIN CLUSTER_DOMAIN` and
+   `export EXPOSED_DOMAIN="$DOMAIN_A"`, as the CI leg does: the organization
+   roles build the node FQDNs of scenario C from it (sub-task 1.1). Expected:
+   CoreDNS has the six rules, every regex ending with `\.$` (sub-task
+   1.8); `Complete` both times; the nodes' `DOMAIN` is the nip.io domain.
 7. Scenario B with `NEUTRALIZE_NODE_INGRESSES=true` (the full run deferred
    from 1.7). Expected: `Complete`; before the destroy Job,
    `kubectl get ingress -n "$NS"` shows class `none` for every node Ingress.
-8. On GitHub Actions, for the pushed branch:
+8. On GitHub Actions, for the pushed branch (`fvtest.yml` only has a
+   `workflow_dispatch` trigger: a push does not start it):
    ```bash
+   gh workflow run fvtest.yml --ref "$(git branch --show-current)"
    gh run list --workflow fvtest.yml --branch "$(git branch --show-current)" --limit 1
    gh run view <run id>
    ```

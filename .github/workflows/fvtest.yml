@@ -7,7 +7,17 @@ on:
 
 jobs:
   setup:
+    name: FV test (nginx / ${{ matrix.scenario }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # expose-all: scenario A, everything through nginx, tests run on this runner.
+        # expose-none: scenario C, nothing exposed, node FQDNs rewritten by CoreDNS.
+        # expose-none-internal: scenario B, nothing exposed, node FQDNs are Service FQDNs.
+        # The two unexposed legs run the tests from inside the cluster (in-cluster Job).
+        # Step 2: add the gateway-api legs here (ingress_type: gateway-api).
+        scenario: [expose-all, expose-none, expose-none-internal]
     steps:
       - uses: actions/checkout@v4
       - name: Use Python 3.10
@@ -21,6 +31,25 @@ jobs:
         uses: helm/kind-action@v1.4.0
         with:
           install_only: true
+      - name: Scenario variables
+        # Read by kind_with_nginx.sh (CoreDNS rules, sub-task 1.8), the console
+        # deployment and run-tests.sh (common-vars.yml, sub-task 1.3).
+        run: |
+          set -xe
+          if [ "${{ matrix.scenario }}" = "expose-all" ]; then EXPOSE=true; else EXPOSE=false; fi
+          {
+            echo "INGRESS_TYPE=nginx"
+            echo "EXPOSE_CONSOLE=${EXPOSE}"
+            echo "EXPOSE_CA=${EXPOSE}"
+            echo "EXPOSE_PEER=${EXPOSE}"
+            echo "EXPOSE_ORDERER=${EXPOSE}"
+            echo "NAMESPACE=default"
+            echo "CONSOLE_NAME=hlf-console"
+          } >> "$GITHUB_ENV"
+          if [ "${{ matrix.scenario }}" = "expose-none-internal" ]; then
+            echo "HLF_NETWORK_DOMAIN=cluster.local" >> "$GITHUB_ENV"
+            echo "CLUSTER_DOMAIN=cluster.local" >> "$GITHUB_ENV"
+          fi
       - name: Setup and create the KIND cluster
         run: |
           set -xev
@@ -37,6 +66,11 @@ jobs:
           echo "TEST_NETWORK_INGRESS_DOMAIN=${TEST_NETWORK_INGRESS_DOMAIN}" >> "$GITHUB_ENV"
           echo "KUBECONFIG=${PWD}/_cfg/k8s_context.yaml" >> "$GITHUB_ENV"
           echo "console_domain: ${TEST_NETWORK_INGRESS_DOMAIN}" >> _cfg/domain.yml
+          # Scenario C: the organization roles build the node FQDNs from the
+          # exposed domain (sub-task 1.1). Scenario B does not use it.
+          if [ "${{ matrix.scenario }}" = "expose-none" ]; then
+            echo "EXPOSED_DOMAIN=${TEST_NETWORK_INGRESS_DOMAIN}" >> "$GITHUB_ENV"
+          fi
       - name: Build collection
         run: |
           ansible-galaxy collection build -f
@@ -45,6 +79,11 @@ jobs:
         run: tests/network_domains/run.sh
       - name: Deploy Fabric Operator and Console
         run: |
+          # The console is created with the scenario variables (spec.deployer.domain
+          # is read only at creation, finding F1).
+          source .github/scripts/scenario-vars.sh
+          patch_scenario_vars tutorial/common-vars.yml
+          print_scenario_vars tutorial/common-vars.yml
           ansible-playbook -i localhost, -c local \
             -e k8s_target=k8s \
             -e console_arch=amd64 \
@@ -66,5 +105,67 @@ jobs:
         with:
           version: 2.4.7
       - name: Run the tests
+        if: matrix.scenario == 'expose-all'
         run: |
           .github/scripts/run-tests.sh
+
+      # In-cluster runner (unexposed legs): the node FQDNs only resolve inside
+      # the cluster, so run-tests.sh runs in a Job (MIGRATION-STEP-1 sub-task 1.9).
+      - name: Build and load the runner image
+        if: matrix.scenario != 'expose-all'
+        run: |
+          set -xe
+          docker build -t fabric-ansible-collection:ci .
+          docker build -t ansible-runner:ci -f .github/docker/ansible-runner/Dockerfile .
+          kind load docker-image ansible-runner:ci
+      - name: Apply the runner RBAC
+        if: matrix.scenario != 'expose-all'
+        run: kubectl apply -f .github/k8s/ansible-runner-rbac.yml
+      - name: Deploy the chaincode server
+        # The Job has neither docker nor the rights to create a Deployment: this
+        # runner builds and deploys the CCaaS server, the Job only writes the
+        # package (CCAAS_PACKAGE_ONLY).
+        if: matrix.scenario != 'expose-all'
+        run: tutorial/deploy_chaincode_server.sh deploy
+      - name: Create the Job inputs
+        if: matrix.scenario != 'expose-all'
+        run: |
+          set -e
+          kubectl create configmap ansible-runner-env \
+            --from-literal=API_ENDPOINT="https://${CONSOLE_NAME}.${K8S_NAMESPACE}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000" \
+            --from-literal=API_AUTHTYPE="${API_AUTHTYPE}" --from-literal=API_KEY="${API_KEY}" \
+            --from-literal=K8S_NAMESPACE="${K8S_NAMESPACE}" --from-literal=KEEP_NETWORK=true \
+            --from-literal=TEST_RUN_ID="$(openssl rand -hex 20)" \
+            --from-literal=INGRESS_TYPE="${INGRESS_TYPE}" \
+            --from-literal=EXPOSE_CONSOLE="${EXPOSE_CONSOLE}" --from-literal=EXPOSE_CA="${EXPOSE_CA}" \
+            --from-literal=EXPOSE_PEER="${EXPOSE_PEER}" --from-literal=EXPOSE_ORDERER="${EXPOSE_ORDERER}" \
+            --from-literal=EXPOSED_DOMAIN="${EXPOSED_DOMAIN:-}" \
+            --from-literal=HLF_NETWORK_DOMAIN="${HLF_NETWORK_DOMAIN:-}" \
+            --from-literal=CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}" \
+            --from-literal=NEUTRALIZE_NODE_INGRESSES="${NEUTRALIZE_NODE_INGRESSES:-}" \
+            --from-literal=CCAAS_PACKAGE_ONLY=true \
+            --from-literal=WAIT_TIMEOUT=1800
+          kubectl create secret generic ansible-runner-auth --from-literal=API_SECRET="${API_SECRET}"
+      - name: Run the tests in the cluster
+        if: matrix.scenario != 'expose-all'
+        run: |
+          kubectl apply -f .github/k8s/ansible-runner-job.yml
+          .github/scripts/wait-job.sh ansible-runner 3600
+      - name: Logs of the tests
+        if: always() && matrix.scenario != 'expose-all'
+        run: kubectl logs job/ansible-runner --all-containers || true
+      - name: Verify unexposed reachability
+        # The network is still alive: the destroy step below removes it.
+        if: matrix.scenario != 'expose-all'
+        run: .github/scripts/verify-unexposed-reachability.sh
+      - name: Destroy the network
+        if: always() && matrix.scenario != 'expose-all'
+        run: |
+          yq -y '.metadata.name = "ansible-runner-destroy"
+                 | .spec.template.spec.containers[0].env += [{"name": "RUN_TESTS_MODE", "value": "destroy"}]' \
+            .github/k8s/ansible-runner-job.yml | kubectl apply -f -
+          status=0
+          .github/scripts/wait-job.sh ansible-runner-destroy 1800 || status=$?
+          kubectl logs job/ansible-runner-destroy --all-containers || true
+          tutorial/deploy_chaincode_server.sh destroy
+          exit "${status}"

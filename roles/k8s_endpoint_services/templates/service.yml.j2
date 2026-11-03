@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ _svc_name }}
+  namespace: {{ k8s_endpoint_services_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: fabric-ansible-collection
+    fabric-ansible-collection/component: "{{ k8s_endpoint_services_component }}"
+    fabric-ansible-collection/instance: "{{ item.0 }}"
+    fabric-ansible-collection/endpoint: "{{ item.1.endpoint }}"
+spec:
+  type: ClusterIP
+  selector:
+    {{ k8s_endpoint_services_selector_key }}: "{{ item.0 }}"
+  ports:
+    - name: https
+      port: 443
+      # An integer: a string targetPort is the name of a port.
+      targetPort: {{ item.1.target_port | int }}
+      protocol: TCP

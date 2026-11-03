@@ -123,7 +123,7 @@ Commands the checks refer to by name:
 | **Rebuild** (after any change under `roles/` or `plugins/`) | `ansible-galaxy collection build -f --output-path /tmp/fac && ansible-galaxy collection install -f /tmp/fac/hyperledger-fabric_ansible_collection-*.tar.gz` | `... was installed successfully` |
 | **Regression run** (scenario A) | `.github/scripts/run-tests.sh` | exit 0, as at the end of Step 0 |
 | **Scenario C run** (from 1.3) | `EXPOSED_DOMAIN="$DOMAIN_A" EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false KEEP_NETWORK=true .github/scripts/run-tests.sh` | exit 0, network kept for inspection |
-| **Destroy** (from 1.3) | `RUN_TESTS_MODE=destroy .github/scripts/run-tests.sh`, with the same `EXPOSE_*` as the run | exit 0; `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` finds nothing |
+| **Destroy** (from 1.3) | `RUN_TESTS_MODE=destroy .github/scripts/run-tests.sh`, with the same scenario variables as the run (`EXPOSE_*` **and** `EXPOSED_DOMAIN`) | exit 0; `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` finds nothing |
 | **Fresh console** | `.github/scripts/undeploy-console.sh && .github/scripts/deploy-console.sh` | the console URL is printed |
 
 **What a laptop can run.** The laptop reaches the cluster only through nginx
@@ -857,11 +857,17 @@ restarts. Hence:
   use `v1beta1`.
 - [ ] Add the "domain changed on an existing console" detection and restart.
   It reads the live `IBPConsole`, so it depends on the `apiVersion` fix above.
-- [ ] When `spec.deployer.domain` or `spec.ingress.class` is no longer
-  rendered but the live CR still has it (going back from B to A), remove it
-  explicitly (`null` in a merge patch). `kubernetes.core.k8s` with
-  `state: present` merges, so a field missing from the template stays on the
-  live CR.
+  Written once, in `roles/network_domains/tasks/console_domain_change.yml`,
+  and included right after the CR update by the four create paths of the
+  console roles and by `tutorial/00-deploy-fabric-console.yml` (which now
+  reads the live console too). The running console's node domain is
+  `spec.deployer.domain`, or `spec.networkinfo.domain` without it.
+- [x] ~~When `spec.deployer.domain` or `spec.ingress.class` is no longer
+  rendered, remove it explicitly.~~ **Not needed** (checked 2026-10-27): the
+  three create paths use `kubernetes.core.k8s` with `apply: true`
+  (`kubectl apply` semantics), which removes the fields of the last applied
+  configuration that the template no longer renders. Going back from B to A
+  in place left neither `deployer` nor `ingress` on the CR.
 - [ ] Render the templates for scenarios A and B with `ansible-playbook
   --check --diff` and compare with the examples above.
 
@@ -886,11 +892,15 @@ domain change restarts the console with a warning.
 
 1. **Before writing any code**, save today's console spec (scenario A):
    ```bash
-   kubectl get ibpconsole hlf-console -n "$NS" -o json | jq -S .spec > /tmp/console-spec-before.json
+   kubectl get ibpconsole hlf-console -n "$NS" -o json | jq -S '.spec | del(.connectionString, .password)' > /tmp/console-spec-before.json
    ```
+   `connectionString` (CouchDB credentials, generated anew for every console)
+   and `password` (removed by the operator once a new console is set up) are
+   managed by the operator, not by the template: they are left out, which
+   also keeps credentials off the screen.
 2. After the change: `ansible-lint`, **Rebuild**, **Fresh console**, then:
    ```bash
-   kubectl get ibpconsole hlf-console -n "$NS" -o json | jq -S .spec | diff /tmp/console-spec-before.json -
+   kubectl get ibpconsole hlf-console -n "$NS" -o json | jq -S '.spec | del(.connectionString, .password)' | diff /tmp/console-spec-before.json -
    ```
    Expected: no difference.
 3. `apiVersion` fix: `.github/scripts/deploy-console.sh` once more.
@@ -922,8 +932,10 @@ domain change restarts the console with a warning.
    (`kubectl get deploy hlf-console -n "$NS" -o jsonpath='{.spec.template.metadata.annotations}'`
    shows `kubectl.kubernetes.io/restartedAt`); `deployer.domain` is now
    `fabric.example.com`.
-7. Back to A: **Fresh console**, then step 2's `diff` is empty again (no
-   `deployer` or `ingress` field left behind).
+7. Back to A, first **in place** (`.github/scripts/deploy-console.sh` with no
+   variable, without undeploying): the F1 warning shows again, and step 2's
+   `diff` is empty (no `deployer` or `ingress` field left behind). Then with a
+   **Fresh console**: step 2's `diff` is empty again.
 8. **Regression run**: exit 0.
 9. **Changed files vs the merge-conflict analysis.**
    ```bash
@@ -1139,6 +1151,19 @@ k8s_endpoint_services_urls: []
     _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"
 ```
 
+**Finding (found by running the role): an inline `targetPort` does not stay an
+integer.** `targetPort: "{{ item.1.target_port | int }}"`, as written above,
+reaches Kubernetes as the string `"7054"`, and the API server rejects it
+(`must contain at least one letter (a-z)`: a string `targetPort` is the *name*
+of a port). Ansible keeps a number rendered inside a nested `definition` as a
+string. The role therefore renders the Service from
+`templates/service.yml.j2`, where `targetPort` is an unquoted number, and
+parses it with `from_yaml`:
+
+```yaml
+definition: "{{ lookup('ansible.builtin.template', 'service.yml.j2') | from_yaml }}"
+```
+
 `roles/k8s_endpoint_services/tasks/verify.yml`:
 
 ```yaml
@@ -1178,6 +1203,29 @@ k8s_endpoint_services_urls: []
 ```
 
 ### Calls from the organization roles
+
+**Implemented differently from the snippets below, for one reason.** The
+snippets build the CR names inline, so the rules S1 and S2 would be copied
+into four call sites, and the role defaults `k8s_endpoint_services_cr_name_regex`
+and `k8s_endpoint_services_orderer_node_suffix` would not be used by anything.
+The assumptions table promises that a wrong guess is a default to change. So
+each call passes `k8s_endpoint_services_display_name` (and
+`k8s_endpoint_services_count` for the peers and the ordering nodes), and the
+role works the names out in `tasks/cr_names.yml` with those two defaults.
+`k8s_endpoint_services_cr_names` still overrides the result (check 7 uses it).
+Everything else is as written below.
+
+**Reruns.** Before each "Create per-endpoint Services" call, the organization
+role gets the node with `certificate_authority_info`, `peer_info` (one call
+per peer) or `ordering_service_info`, and passes the `api_url` of each node
+that exists already in `k8s_endpoint_services_existing_urls` (`""` for a node
+not created yet). `tasks/cr_names.yml` reads the CR name of an existing node
+from its URL, and works out only the others. The verify call gets the same
+list. The `delete.yml` of each organization role does the same before it
+deletes the nodes, with `failed_when: false`: a node that does not answer
+must not block the deletion, and its CR name is then worked out from its
+display name. The `*_info` modules wait for `/healthz`, like the create
+modules called just after them, so they add no new way to fail on a rerun.
 
 `roles/endorsing_organization/tasks/create.yml` (after the
 `network_domains` include of sub-task 1.1, which makes `expose_*` and
@@ -1276,23 +1324,29 @@ The `delete.yml` of each organization role calls
 - `ansible-lint` passes on the new role and all modified task files.
 
 **Todo list:**
-- [ ] Create `roles/k8s_endpoint_services/` (`defaults/main.yml`,
-  `tasks/main.yml`, `tasks/verify.yml`, `tasks/delete.yml`, `meta/main.yml`)
+- [x] Create `roles/k8s_endpoint_services/` (`defaults/main.yml`,
+  `tasks/main.yml`, `tasks/cr_names.yml`, `tasks/verify.yml`, `tasks/delete.yml`,
+  `templates/service.yml.j2`, `meta/main.yml`)
   with the content above. `k8s_endpoint_services_namespace` is passed by the
   caller (no `k8s_namespace` default inside the role).
-- [ ] Add the create / V5 / verify blocks around the CA and peer module calls
+- [x] Add the create / V5 / verify blocks around the CA and peer module calls
   in `roles/endorsing_organization/tasks/create.yml`, and register the module
   outputs (`endorsing_organization_ca`, `endorsing_organization_peer`,
   `endorsing_organization_peers`).
-- [ ] Add the create / V5 / verify blocks around the CA and ordering-service
+- [x] Add the create / V5 / verify blocks around the CA and ordering-service
   module calls in `roles/ordering_organization/tasks/create.yml`, and
   register the module outputs.
-- [ ] Add the delete calls to both organization roles' `delete.yml`.
-- [ ] Make the verify step's failure message print the CR name read from the
+- [x] Add the delete calls to both organization roles' `delete.yml`.
+- [x] Make the verify step's failure message print the CR name read from the
   returned URL, so an S1 mismatch is fixable at once.
-- [ ] Document the new role in `docs/source/roles/` (internal, but its
-  defaults are user-overridable).
-- [ ] Run `ansible-lint` on the new role and all modified task files.
+- [x] On reruns, read the CR names from the URLs of the existing nodes
+  (`*_info` modules, `k8s_endpoint_services_existing_urls`), in `create.yml`
+  and `delete.yml` of both organization roles.
+- [x] Document the new role in `docs/source/roles/k8s-endpoint-services.rst`
+  (internal, but its defaults are user-overridable). The `roles/*` glob lists
+  it: no index change. The page uses titles that appear nowhere else, so the
+  docs build keeps its 211 warnings.
+- [x] Run `ansible-lint` on the new role and all modified task files.
 
 **Relevant context:**
 - Sub-task 1.6 runs whenever the component is not exposed, **including**
@@ -1310,6 +1364,9 @@ The `delete.yml` of each organization role calls
   however, assume CA, peer and orderer are **all** unexposed, because the
   `-operations` suffix is shared by all three components. Mixed modes need
   exact per-FQDN rewrites and are out of scope for Step 1 CI.
+- A throwaway playbook must receive a display name as JSON
+  (`-e '{"dn": "Org1 CA"}'`): with `-e dn="Org1 CA"` Ansible keeps only
+  `Org1` (finding F3).
 - The port variables `ingress_grpc_peer_port`, `ingress_grpc_orderer_port`
   and `ingress_ca_port` from sub-task 1.1 remain Gateway-API listener ports
   for Step 2. They are **not** the native target ports above.
@@ -1351,7 +1408,8 @@ Service FQDNs: the names scenario B uses.
      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.ports[*].port}{"\n"}{end}'
    ```
    Expected: native ports only (7054, 9443, 7051, ...), no `443` on a CA,
-   peer or orderer Service.
+   peer or orderer Service. The `kubernetes` Service of the API server also
+   lists `443`: ignore it.
 6. The Service names reach the right port, from inside the cluster:
    ```bash
    PEER_OPS=$(kubectl get svc -n "$NS" -l "$SEL,fabric-ansible-collection/component=peer,fabric-ansible-collection/endpoint=operations" -o jsonpath='{.items[0].metadata.name}')
@@ -1390,12 +1448,33 @@ Service FQDNs: the names scenario B uses.
    ```
    Expected: both fail. V5 names the URL and `hlf_node_domain`; the verify
    message names `$PEER_OPS` and tells where the real CR name is in it.
-8. **Destroy** (with the same `EXPOSE_*`). Expected: exit 0, and
+8. **Rerun**: the CR name of an existing node is read from its URL. With
+   the network of step 2 still up, run the organization playbooks again:
+   ```bash
+   kubectl get svc -n "$NS" -l "$SEL" -o custom-columns=N:.metadata.name,U:.metadata.uid --no-headers | sort > /tmp/svc-before
+   (cd tutorial && ansible-playbook 01-create-ordering-organization-components.yml \
+     && ansible-playbook 02-create-endorsing-organization-components.yml)
+   kubectl get svc -n "$NS" -l "$SEL" -o custom-columns=N:.metadata.name,U:.metadata.uid --no-headers | sort | diff /tmp/svc-before - && echo IDENTICAL
+   ```
+   Expected: exit 0; "Get the CA if it exists already", "Get the peers that
+   exist already" and "Get the ordering service if it exists already" are
+   `ok`; `IDENTICAL` (same names, same UIDs). Then show that the name comes
+   from the URL, not from the display name: in the playbook of step 7, add a
+   `peer_info` call on `Org1 Peer` before the verify step, give the verify
+   step the display name `Wrong Name`, its `api_url` in
+   `k8s_endpoint_services_existing_urls`, and its three URLs in
+   `k8s_endpoint_services_urls`. Expected: it passes; without
+   `k8s_endpoint_services_existing_urls` it fails and names `org1peer`.
+9. **Destroy**, with the same `EXPOSE_*` **and** `EXPOSED_DOMAIN` as the run:
+   the delete tasks compute the domains first, and an unexposed component
+   needs `EXPOSED_DOMAIN` (without it the run fails, nothing is deleted); without
+   `EXPOSE_*` the Services of the unexposed components are left behind. Expected: exit 0,
+   the "Get ... if it exists" tasks run before the nodes are deleted, and
    `kubectl get svc -n "$NS" -l "$SEL"` finds nothing: the delete path
    removed the Services.
-9. Scenario A creates nothing: **Regression run** with `KEEP_NETWORK=true`,
+10. Scenario A creates nothing: **Regression run** with `KEEP_NETWORK=true`,
    then `kubectl get svc -n "$NS" -l "$SEL"` finds nothing. **Destroy**.
-10. **Changed files vs the merge-conflict analysis.**
+11. **Changed files vs the merge-conflict analysis.**
     ```bash
     git fetch origin && git diff --name-only "$BASE"...HEAD
     ```
@@ -1433,91 +1512,189 @@ node after its module call. The Ingress is kept but no longer served.
 - the CR patch does not restart the node pod (same UID, 0 restarts); the
   Ingress class changes within ~4 s.
 
+**Checked on 2026-10-29** on a CA, an ordering node and a peer (check 1.7
+below):
+- CA, ordering node and peer: CR class `none`, Ingress class `none`, nginx
+  answers 404 for every endpoint host of the node.
+- A peer update through the console (resources 200m/1G → 123m/234M) keeps
+  `spec.ingress.class: none` and the Ingress stays unserved: check 3 of
+  URL-MANAGEMENT-NEW.md §9 now passes on a peer too.
+- **Finding: the class patch rolls out a new peer pod.** The CA and the
+  ordering node keep their pod (created before the patch, 0 restarts). The
+  peer gets a new ReplicaSet one second after the patch. Cause, in the
+  operator: at creation, `PEER_NAME` is added to the peer container only in
+  one branch (*operator* `pkg/offering/base/peer/override/deployment.go:418`);
+  on every spec update it is always added (`:471`). The first spec update of
+  a peer, whatever it changes, therefore changes the pod template. The role
+  waits until the Deployments of the nodes are ready again.
+- **Finding: from outside the cluster, a neutralized CA breaks the rest of
+  the organization role.** The laptop reaches the CA through nginx, and in
+  scenario C without sub-task 1.8 the operator does too (Step 0 CoreDNS
+  rewrite to nginx). With every component unexposed and neutralized,
+  *Enroll certificate authority admin* fails (`Expecting value: line 1
+  column 1`, nginx's 404 page) right after the CA patch. Neutralization
+  needs the playbooks in the cluster and one route per endpoint: scenario B,
+  or scenario C with sub-task 1.8 (check 1.9). The check below keeps the CA
+  exposed in the organization run, and neutralizes it afterwards.
+- **Finding: through nginx, `/healthz` answers 200 for any host.** It is
+  nginx's own health endpoint (empty body), served by its default server.
+  A probe of a neutralized node must use another path: `/cainfo` on a CA
+  host, `/version` on an operations host. With `/healthz`, a neutralized
+  node looks served.
+
 **Expected outcomes:**
 - Default (`false`): nothing changes.
 - `true`: after each node module call, the node CR has
   `spec.ingress.class: none`, the Ingress `ingressClassName: none`, and nginx
   answers 404 for every endpoint host of that node.
 - Per component: only unexposed components are patched.
+- The CA and ordering node pods are not restarted; a peer pod is rolled out
+  once, and the role waits until it is ready.
+
+**Implemented in the role `k8s_endpoint_services`**, for the same reason as
+sub-task 1.6 (four call sites): `tasks/neutralize_ingress.yml`, called from
+both organization roles with `tasks_from: neutralize_ingress` after the
+verify step of each component. It reads the CR names from the URLs returned
+by the module call, patches each CR with `spec.ingress.class:
+"{{ k8s_endpoint_services_ingress_class }}"` (the organization roles pass
+`unexposed_ingress_class`), waits for the Ingresses (label `app=<cr_name>`),
+then for the Deployments of the nodes (`k8s_endpoint_services_wait_timeout`,
+600 s).
 
 **Todo list:**
-- [ ] In both organization roles, after each node module call (and after
+- [x] In both organization roles, after each node module call (and after
   V5), patch `IBPCA` / `IBPPeer` / `IBPOrderer` (one per ordering node) with
   `spec.ingress.class: "{{ unexposed_ingress_class }}"` when
   `neutralize_node_ingresses | bool and not expose_<component> | bool`.
   The CR names come from the returned URLs (sub-task 1.6).
-- [ ] Wait until each Ingress shows `ingressClassName == unexposed_ingress_class`.
-- [ ] Repeat check 3 on a **peer** update before considering a `true`
-  default (D4).
+- [x] Wait until each Ingress shows `ingressClassName == unexposed_ingress_class`.
+- [x] Wait until the Deployments of the nodes are ready again (peer rollout,
+  finding above).
+- [x] Repeat check 3 on a **peer** update before considering a `true`
+  default (D4). Passed 2026-10-29; the default stays `false` in Step 1.
+- [x] Document `tasks_from: neutralize_ingress` in
+  `docs/source/roles/k8s-endpoint-services.rst`.
 
 **Relevant context:**
 - The neutralized case is checked by assertion 1 of sub-task 1.10, in that
-  PR: this one doesn't touch the assertions.
+  PR: this one doesn't touch the assertions. Its node probes must not use
+  `/healthz` through nginx (finding above).
 - The class must be set on the **CR**, not the Ingress: the operator rebuilds
   the Ingress from the CR on every spec change.
 - Exposure window: between CR creation and the patch (the module blocks until
   the node is healthy), the endpoints are reachable through nginx. Closing it
   needs an operator change, out of scope.
+- After neutralization, a laptop cannot reach the node any more, so the
+  `*_info` calls of the delete path (sub-task 1.6) wait `wait_timeout`
+  before they fall back to the display name: `run-tests.sh` sets it to 1800 s.
+  Clean up with `-e wait_timeout=10`.
 
 ### ✋  check 1.7
 
 **Proves:** by default nothing changes; with `neutralize_node_ingresses:
-true` every unexposed node CR gets class `none`, nginx stops serving it, and
-no pod restarts.
+true` every unexposed node CR gets class `none` and nginx stops serving it;
+the CA and ordering node pods are not restarted, the peer is ready again; a
+console update keeps the class.
 
-Once node Ingresses are unserved the laptop cannot reach the nodes, so a
-full run from the laptop would fail at the channel steps. This check
-creates the ordering organization only (CA and orderer). The full run with
-neutralization is in  check 1.9.
+Once node Ingresses are unserved the laptop cannot reach the nodes (finding
+above). So the organization runs below keep the CA exposed, and the CA is
+neutralized with the role afterwards. The full run with every component
+neutralized is in check 1.9.
+
+Before you recreate an organization you just deleted, wait for its volumes to
+be gone (`kubectl wait --for=delete pvc --all -n "$NS" --timeout=300s`):
+otherwise the new CA pod waits about ten minutes for the old volume.
 
 1. `ansible-lint`; **Rebuild**.
-2. Default, ordering organization only:
+2. Default, every component unexposed, ordering organization only:
    ```bash
-   EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false RUN_TESTS_MODE=patch .github/scripts/run-tests.sh
-   (cd tutorial && ansible-playbook 01-create-ordering-organization-components.yml)
-   kubectl get ibpca,ibporderer -n "$NS" -o custom-columns='NAME:.metadata.name,CLASS:.spec.ingress.class'
-   kubectl get ingress -n "$NS"
-   CA_HOST=$(kubectl get ingress -n "$NS" -o jsonpath='{range .items[*].spec.rules[*]}{.host}{"\n"}{end}' | grep -- '-ca\.' | head -1)
-   curl -sk -o /dev/null -w '%{http_code}\n' --resolve "$CA_HOST:443:127.0.0.1" "https://$CA_HOST/cainfo"
-   ```
-   Expected: CR class `<none>` (not set), Ingress class `nginx`, `200`.
-   Then delete: `(cd tutorial && ansible-playbook 99-delete-ordering-organization-components.yml)`.
-3. Neutralized, same organization:
-   ```bash
-   EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false NEUTRALIZE_NODE_INGRESSES=true \
+   EXPOSED_DOMAIN="$DOMAIN_A" EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false \
      RUN_TESTS_MODE=patch .github/scripts/run-tests.sh
    (cd tutorial && ansible-playbook 01-create-ordering-organization-components.yml)
+   probe() {
+     kubectl get ibpca,ibppeer,ibporderer -n "$NS" -o custom-columns='KIND:.kind,NAME:.metadata.name,CLASS:.spec.ingress.class'
+     kubectl get ingress -n "$NS" -o custom-columns='NAME:.metadata.name,CLASS:.spec.ingressClassName'
+     for h in $(kubectl get ingress -n "$NS" -o jsonpath='{range .items[*].spec.rules[*]}{.host}{"\n"}{end}'); do
+       case "$h" in *-ca.*) p=/cainfo;; *-operations.*) p=/version;; *) continue;; esac
+       echo "$h$p $(curl -sk -o /dev/null -w '%{http_code}' --resolve "$h:443:127.0.0.1" "https://$h$p")"
+     done
+   }
+   probe
    ```
-   Expected: the play ends `ok`, with one patch task per CA and orderer node,
-   and a wait for the Ingress class.
-4. Rerun step 2's `kubectl get` and `curl` lines. Expected: CR class `none`,
-   Ingress class `none` for the CA and every orderer node, the console
-   Ingress still `nginx`; the `curl` now prints `404`.
-5. No restart:
+   Expected: every CR class `<none>` (not set), every Ingress class `nginx`,
+   every probe `200`. Then delete:
+   `(cd tutorial && ansible-playbook 99-delete-ordering-organization-components.yml)`,
+   and wait for the volumes (see above).
+3. Neutralized, CA exposed, ordering node unexposed:
    ```bash
-   CA_CR=$(kubectl get ibpca -n "$NS" -o jsonpath='{.items[0].metadata.name}')
-   kubectl get ibpca "$CA_CR" -n "$NS" -o json \
-     | jq -r '.metadata.managedFields[] | select(.fieldsV1["f:spec"]["f:ingress"]["f:class"] != null) | "class set at \(.time)"'
-   kubectl get pods -n "$NS" -l app="$CA_CR" \
-     -o jsonpath='{.items[0].metadata.creationTimestamp}{"  restarts="}{.items[0].status.containerStatuses[0].restartCount}{"\n"}'
+   EXPOSED_DOMAIN="$DOMAIN_A" EXPOSE_CA=true EXPOSE_PEER=false EXPOSE_ORDERER=false \
+     NEUTRALIZE_NODE_INGRESSES=true RUN_TESTS_MODE=patch .github/scripts/run-tests.sh
+   (cd tutorial && ansible-playbook 01-create-ordering-organization-components.yml)
    ```
-   Expected: the pod was created **before** the class was set, with
-   `restarts=0`.
-6. Clean up: `(cd tutorial && ansible-playbook 99-delete-ordering-organization-components.yml)`,
-   then restore the vars files.
-7. **Changed files vs the merge-conflict analysis.**
+   Expected: the play ends `ok`; "Neutralize the Ingress of the CA" is
+   skipped; for the ordering node, one "Set the Ingress class" (`changed`),
+   then both waits `ok`.
+4. `probe`. Expected: class `none` on the ordering node CR and Ingress, the
+   CA and the console still `nginx`; `200` on the CA hosts, `404` on
+   `-orderingservicenode1-operations .../version`.
+5. No restart of the ordering node:
    ```bash
-   git fetch origin && git diff --name-only "$BASE"...HEAD
+   norestart() {   # norestart <kind> <cr>
+     kubectl get "$1" "$2" -n "$NS" --show-managed-fields -o json \
+       | jq -r '.metadata.managedFields[] | select(.fieldsV1["f:spec"]["f:ingress"]["f:class"] != null) | "class set at \(.time)"'
+     kubectl get pods -n "$NS" -l app="$2" \
+       -o jsonpath='{range .items[*]}pod created {.metadata.creationTimestamp} restarts={.status.containerStatuses[0].restartCount}{"\n"}{end}'
+     kubectl get rs -n "$NS" -l app="$2" -o custom-columns='RS:.metadata.name,CREATED:.metadata.creationTimestamp' --no-headers
+   }
+   norestart ibporderer orderingservicenode1
    ```
-   Expected: only the files of the 1.7 row of the
-   [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
-   If a file is not listed, check that it is not changed by the
-   sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 4: 1.8, 1.5, 1.11.
-   Look at their row of the table and at their open PR
-   (`gh pr diff <PR number> --name-only`). If one of them changes it,
-   raise a warning in the PR description: 1.7 must be merged before
-   or after that sub-task (for example 1.8), not at the same time.
-   In both cases, add the file to the 1.7 row of the table.
+   Expected: the pod was created **before** the class was set,
+   `restarts=0`, one ReplicaSet. (`--show-managed-fields` is needed:
+   recent `kubectl` hides `managedFields`.)
+6. The CA, with the role: a throwaway playbook gets the CA with
+   `certificate_authority_info` (`name: "{{ ordering_org_name }} CA"`, vars
+   files `tutorial/common-vars.yml` and `tutorial/ordering-org-vars.yml`),
+   then runs `include_role` `k8s_endpoint_services`, `tasks_from:
+   neutralize_ingress`, with `k8s_endpoint_services_component: ca` and its
+   `api_url` and `operations_url` in `k8s_endpoint_services_urls`. Then
+   `probe` and `norestart ibpca orderingorgca`. Expected: class `none` on the
+   CA CR and Ingress, `404` on both CA hosts; same pod, `restarts=0`.
+7. The peer: `(cd tutorial && ansible-playbook 02-create-endorsing-organization-components.yml)`,
+   then `probe` and `norestart ibppeer org1peer`. Expected: the play ends
+   `ok`; class `none` on the peer CR and Ingress, `404` on its operations
+   host, `200` on the Org1 CA hosts; **two** ReplicaSets, the newer one
+   created right after the class (finding above), its pod ready.
+8. A console update of the neutralized peer keeps the class: a throwaway
+   playbook runs the `peer` module on `Org1 Peer` with only
+   `resources: {peer: {requests: {cpu: 123m, memory: 234M}}}` and
+   `wait_timeout: 5` (`ignore_errors: true`: the module sends the update,
+   then its health wait fails, because nginx no longer serves the peer).
+   ```bash
+   kubectl get ibppeer org1peer -n "$NS" -o jsonpath='{.spec.ingress.class} {.spec.resources.peer.requests}{"\n"}'
+   ```
+   Expected: `none {"cpu":"123m","memory":"234M"}`; `probe` still gives
+   `404` for the peer.
+9. Clean up, with short waits (the `*_info` calls of the delete path cannot
+   reach the neutralized nodes):
+   ```bash
+   (cd tutorial && ansible-playbook 97-delete-endorsing-organization-components.yml -e wait_timeout=10)
+   (cd tutorial && ansible-playbook 99-delete-ordering-organization-components.yml -e wait_timeout=10)
+   kubectl get svc -n "$NS" -l "$SEL"; kubectl get ibpca,ibppeer,ibporderer -n "$NS"
+   ```
+   Expected: nothing left. Restore the vars files.
+10. **Changed files vs the merge-conflict analysis.**
+    ```bash
+    git fetch origin && git diff --name-only "$BASE"...HEAD
+    ```
+    Expected: only the files of the 1.7 row of the
+    [files table](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#files-changed-by-each-sub-task).
+    If a file is not listed, check that it is not changed by the
+    sub-tasks running in parallel in [wave](./MIGRATION-STEP-1-SUBSTEP-MERGE-CONFLICTS-RISK-ANALYSIS.md#waves) 4: 1.8, 1.5, 1.11.
+    Look at their row of the table and at their open PR
+    (`gh pr diff <PR number> --name-only`). If one of them changes it,
+    raise a warning in the PR description: 1.7 must be merged before
+    or after that sub-task (for example 1.8), not at the same time.
+    In both cases, add the file to the 1.7 row of the table.
 
 
 ---
@@ -1525,7 +1702,7 @@ neutralization is in  check 1.9.
 <a id="subtask-1-8"></a>
 ## Sub-task 1.8 — CoreDNS per-endpoint-type rewrites for the `expose-none` CI leg
 
-**Scenarios:** [C](./SCENARIOS-MERMAID.md#scenario-c) only; [A](./SCENARIOS-MERMAID.md#scenario-a) and [B](./SCENARIOS-MERMAID.md#scenario-b) unchanged.
+**Scenarios:** [C](./SCENARIOS-MERMAID.md#scenario-c) for the endpoint rules; in [A](./SCENARIOS-MERMAID.md#scenario-a) and [B](./SCENARIOS-MERMAID.md#scenario-b), only the existing wildcards change (`\.$` anchor).
 
 **Intent:** When `expose_*: false` and the node FQDNs are **not**
 cluster-local (scenario C: `hlf_network_domain` left at `exposed_domain`, in
@@ -1562,7 +1739,7 @@ The dialled hostname stays the original FQDN, so TLS SANs remain valid and no
   during `build_network.sh`.
 - The existing `Corefile` content (the `localho.st` / nip.io wildcards to
   `host.ingress.internal`, the `hosts` block, the `kubernetes` plugin) is
-  **kept**. The endpoint rules are inserted **before** the wildcards. With
+  **kept**; only the wildcards get the `\.$` anchor (below). The endpoint rules are inserted **before** the wildcards. With
   rewrite's default `stop` behaviour, the first matching rule wins, so
   endpoint FQDNs never reach the wildcard, while the console FQDN
   (`-console`, `-proxy`, matching no endpoint rule) still goes to nginx.
@@ -1571,14 +1748,24 @@ The dialled hostname stays the original FQDN, so TLS SANs remain valid and no
   (default `cluster.local`) in both places.
 - Each `name regex` rule has a matching `answer name` rule so that clients
   receive an answer for the name they asked for.
+- Every regex, the existing wildcards included, ends with `\.$` (CoreDNS
+  names end with a dot). A pod has `ndots:5`, so glibc first asks
+  `<name>.<search domain>`, e.g. `<name>.default.svc.cluster.local.`. An
+  unanchored rule rewrites that query too and answers it under another name;
+  glibc (`getaddrinfo`, used by Python and so by the in-cluster runner of
+  sub-task 1.9) drops that answer and stops: `Name or service not known`.
+  Anchored, the search-domain queries get `NXDOMAIN` and glibc goes on to the
+  name itself. The Fabric nodes (Go resolver), busybox `nslookup` and musl
+  `curl` accept the mismatched answer, which is why the unanchored rules
+  passed check 1.8 at first.
 
 **Generated rule (one per endpoint type).** Example for namespace `default`,
 HLF network domain `127-0-0-1.nip.io` and endpoint type `operations`:
 
 ```
 rewrite stop {
-    name regex ^(default-[a-z0-9]+-operations)\.127-0-0-1\.nip\.io {1}.default.svc.cluster.local
-    answer name ^(default-[a-z0-9]+-operations)\.default\.svc\.cluster\.local {1}.127-0-0-1.nip.io
+    name regex ^(default-[a-z0-9]+-operations)\.127-0-0-1\.nip\.io\.$ {1}.default.svc.cluster.local
+    answer name ^(default-[a-z0-9]+-operations)\.default\.svc\.cluster\.local\.$ {1}.127-0-0-1.nip.io
 }
 ```
 
@@ -1590,7 +1777,8 @@ ends in an endpoint word. Scenario B needs no such pattern.
 **Expected outcomes:**
 - In the `expose-none` leg (scenario C), the CoreDNS ConfigMap contains six
   endpoint rewrite blocks ahead of the existing wildcards. In the
-  `expose-all` and `expose-none-internal` (scenario B) legs, it is unchanged.
+  `expose-all` and `expose-none-internal` (scenario B) legs, it has no
+  endpoint block; only the wildcards get the `\.$` anchor.
 - From an in-cluster pod, `nslookup <ns>-<peer>-operations.<domain>` returns
   the ClusterIP of Service `<ns>-<peer>-operations`, which is neither the
   nginx ClusterIP nor the `<ns>-<peer>-peer` ClusterIP.
@@ -1600,7 +1788,7 @@ ends in an endpoint word. Scenario B needs no such pattern.
   `kind_with_envoy_gateway.sh` introduced in Step 2.
 
 **Todo list:**
-- [ ] In `.github/scripts/kind_with_nginx.sh`, add the inputs (they default to
+- [x] In `.github/scripts/kind_with_nginx.sh`, add the inputs (they default to
   the values the tutorial already uses):
   ```bash
   NAMESPACE=${NAMESPACE:-default}
@@ -1608,7 +1796,7 @@ ends in an endpoint word. Scenario B needs no such pattern.
   # HLF_NETWORK_DOMAIN defaults to NIP_DOMAIN (= exposed domain) inside
   # apply_coredns_override
   ```
-- [ ] Add a helper that prints the endpoint rewrite blocks:
+- [x] Add a helper that prints the endpoint rewrite blocks:
   ```bash
   # coredns_endpoint_rewrites NAMESPACE HLF_NETWORK_DOMAIN CLUSTER_DOMAIN
   # One rewrite per endpoint type: <ns>-<cr>-<endpoint>.<domain> -> per-endpoint
@@ -1620,15 +1808,15 @@ ends in an endpoint word. Scenario B needs no such pattern.
     local endpoint
     for endpoint in ca peer orderer operations grpcweb admin; do
       printf '        rewrite stop {\n'
-      printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s {1}.%s.svc.%s\n' \
+      printf '            name regex ^(%s-[a-z0-9]+-%s)\\.%s\\.$ {1}.%s.svc.%s\n' \
         "${ns}" "${endpoint}" "${domain_re}" "${ns}" "${cluster_domain}"
-      printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s {1}.%s\n' \
+      printf '            answer name ^(%s-[a-z0-9]+-%s)\\.%s\\.svc\\.%s\\.$ {1}.%s\n' \
         "${ns}" "${endpoint}" "${ns}" "${cluster_domain_re}" "${domain}"
       printf '        }\n'
     done
   }
   ```
-- [ ] In `apply_coredns_override`, compute the block only for scenario C
+- [x] In `apply_coredns_override`, compute the block only for scenario C
   (all nodes unexposed, HLF network domain not cluster-local), and insert it
   right after `ready`, before the existing wildcard rewrites:
   ```bash
@@ -1650,16 +1838,18 @@ ends in an endpoint word. Scenario B needs no such pattern.
           }
           ready
   ${ENDPOINT_REWRITES}
-          rewrite name regex (.*)\.localho\.st host.ingress.internal
-          rewrite name regex (.*)\.${NIP_DOMAIN} host.ingress.internal
+          rewrite name regex (.*)\.localho\.st\.$ host.ingress.internal
+          rewrite name regex (.*)\.${NIP_DOMAIN}\.$ host.ingress.internal
           hosts { ... unchanged ... }
           kubernetes ${CLUSTER_DOMAIN} in-addr.arpa ip6.arpa { ... unchanged ... }
           ...
   ```
-- [ ] Run `bash -n .github/scripts/kind_with_nginx.sh`.
-- [ ] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
-  bootstrap with `EXPOSE_*=false` and check the six blocks and the unchanged
-  wildcard / `hosts` lines.
+- [x] Run `bash -n .github/scripts/kind_with_nginx.sh`.
+- [x] Locally, run `kubectl -n kube-system get cm coredns -o yaml` after
+  bootstrap with `EXPOSE_*=false` and check the six blocks, the anchored
+  wildcards and the unchanged `hosts` lines.
+- [x] Anchor every regex with `\.$`, the two wildcards included (found by
+  check 1.9, see below).
 
 **Relevant context:**
 - Only CA, peer and orderer get endpoint rules. The console keeps resolving
@@ -1679,6 +1869,32 @@ ends in an endpoint word. Scenario B needs no such pattern.
   itself. The Ansible side reads it from that same Corefile
   (`network_domains`, sub-task 1.1), so both always agree.
 
+**Checked on 2026-10-29** (check 1.8 below, collection built from the
+sub-task 1.6 commit): the six blocks only in C; the scenario C run exits 0
+with every in-cluster call to a node (operator enrollment, console, peer to
+orderer, gossip, chaincode) going to its per-endpoint Service; from a pod,
+all 16 node names resolve to the ClusterIP of their own Service; the console
+name still resolves to the nginx ClusterIP (the answer is named
+`host.ingress.internal`: the existing wildcard has no `answer` rule, as
+before this sub-task).
+
+**Found by check 1.9 on 2026-10-29:** in scenario C the in-cluster runner
+(Python, glibc) failed at its first CA wait with
+`<urlopen error [Errno -2] Name or service not known>`, while the CA was
+up. The unanchored rules also matched the search-domain query
+`<name>.default.svc.cluster.local.` and answered it as `<name>.`; glibc
+dropped the answer and stopped there. The absolute name (`<name>.`) did
+resolve, and the busybox and curl lookups of this check do not use glibc,
+hence the pass above. Anchoring only the six blocks is not enough: the
+search-domain query then falls through to the unanchored nip.io wildcard,
+which answers it as `host.ingress.internal`, with the same failure. With
+every regex anchored, `getaddrinfo` returns the Service ClusterIP and
+`/cainfo` answers 200 from a glibc pod (wait 30 s after the reload for the
+CoreDNS cache to expire), and the whole scenario C run of check 1.9
+completes from inside the cluster. The console name still does not resolve from a
+glibc pod (the wildcard has no `answer` rule, as before); nothing needs it:
+in-cluster clients use the console's Service URL.
+
 ### ✋  check 1.8
 
 **Proves:** the six rules exist only in scenario C, come before the
@@ -1688,9 +1904,11 @@ still goes to nginx.
 1. `bash -n .github/scripts/kind_with_nginx.sh`.
 2. The helper alone, no cluster:
    ```bash
-   bash -c 'source <(sed -n "/^coredns_endpoint_rewrites()/,/^}/p" .github/scripts/kind_with_nginx.sh)
+   bash -c 'eval "$(sed -n "/^coredns_endpoint_rewrites()/,/^}/p" .github/scripts/kind_with_nginx.sh)"
             coredns_endpoint_rewrites default 127-0-0-1.nip.io cluster.local'
    ```
+   (`eval`, not `source <(...)`: the bash 3.2 of macOS sources an empty file
+   from a process substitution, and the function is then not found.)
    Expected: six `rewrite stop` blocks (`ca`, `peer`, `orderer`,
    `operations`, `grpcweb`, `admin`); the `operations` one is the example
    above.
@@ -1701,15 +1919,19 @@ still goes to nginx.
    EXPOSE_CA=false EXPOSE_PEER=false EXPOSE_ORDERER=false .github/scripts/kind_with_nginx.sh
    kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}'
    ```
-   Expected: the six blocks right after `ready`, then the unchanged
-   `localho.st` / nip.io wildcards, `hosts` block and
+   Expected: the six blocks right after `ready`, every regex ending with
+   `\.$`, then the `localho.st` / nip.io wildcards (anchored), the `hosts` block and
    `kubernetes cluster.local ...` line. The CoreDNS pods are younger than the
    change (`kubectl -n kube-system get pods -l k8s-app=kube-dns`).
-4. A and B leave CoreDNS as today: repeat step 3 with no `EXPOSE_*` (A),
+4. A and B get no endpoint rule: repeat step 3 with no `EXPOSE_*` (A),
    then with `EXPOSE_*=false HLF_NETWORK_DOMAIN=cluster.local` (B).
-   Expected: no `rewrite stop` block in either. End with the C cluster.
+   Expected: no `rewrite stop` block in either. End with the C cluster
+   (running A, then B, then C saves one cluster creation). Right after the
+   rollout, the old CoreDNS pods can still be listed while they terminate.
 5. End to end in C: `.github/scripts/deploy-console.sh` (console exposed),
-   then **Scenario C run**. Expected: exit 0.
+   then **Scenario C run**. Expected: exit 0. The installed collection must
+   contain sub-task 1.6 (this branch alone does not create the Services):
+   **Rebuild** from the 1.6 branch, or after 1.6 is merged.
 6. Resolution from inside the cluster:
    ```bash
    PEER_OPS=$(kubectl get svc -n "$NS" -l "$SEL,fabric-ansible-collection/component=peer,fabric-ansible-collection/endpoint=operations" -o jsonpath='{.items[0].metadata.name}')
@@ -1718,11 +1940,16 @@ still goes to nginx.
    indns "$PEER_OPS.$DOMAIN_A"
    indns "default-hlf-console-console.$DOMAIN_A"
    incluster curl -sk "https://$PEER_OPS.$DOMAIN_A/healthz"
+   kubectl run "glibc-$RANDOM" -n "$NS" --image=debian:12-slim --restart=Never \
+     --rm -i --quiet --command -- getent hosts "$PEER_OPS.$DOMAIN_A"
    ```
    Expected: the operations name resolves to the ClusterIP of `$PEER_OPS`
    (not the `-peer` Service, not nginx); the console name resolves to the
    nginx ClusterIP; `/healthz` returns `{"status":"OK"}` through the
-   original name.
+   original name. `getent` (glibc, like the Python of the 1.9 runner)
+   prints the ClusterIP of `$PEER_OPS`. busybox and curl (musl) accept a
+   wrongly named answer, glibc does not: with an unanchored regex,
+   `getent` prints nothing and exits 2 (tried on 2026-10-29).
 7. **Destroy**.
 8. **Changed files vs the merge-conflict analysis.**
    ```bash
@@ -1797,7 +2024,10 @@ USER root
 RUN microdnf install -y jq perl-Digest-SHA python3-pip && microdnf clean -y all
 USER 7051
 # Python yq (run-tests.sh uses `yq -yi`, which mikefarah's yq does not support).
-RUN python3.9 -m pip install --user yq
+# cryptography as in requirements.txt: the base image installs the latest one,
+# and fabric-sdk-py then fails to enroll ("curve must be an EllipticCurve
+# instance").
+RUN python3.9 -m pip install --user yq 'cryptography==42.0.8'
 # Writable copy of the tests: run-tests.sh does `cd tutorial` relative to the repo root.
 COPY --chown=7051:0 .github/scripts /workspace/.github/scripts
 COPY --chown=7051:0 tutorial /workspace/tutorial
@@ -1824,6 +2054,16 @@ CMD [ ".github/scripts/run-tests.sh" ]
   nodes; align them in Step 0 (already listed in REVIEW-MIGRATION-PLAN-STEP-0.md).
 - `run-tests.sh` must work without `_cfg/console-env.sh` (it already falls
   back to environment variables) and skip the `.venv` activation when absent.
+- **cryptography pin (found 2026-10-29).** The root `Dockerfile` installs the
+  latest `cryptography` (50.0.2 that day), not the `42.0.8` of
+  `requirements.txt`. With it, the first enrollment (`Enroll certificate
+  authority admin`, fabric-sdk-py) fails with `curve must be an
+  EllipticCurve instance`. The runner image pins `42.0.8`, which fixes it.
+  The published collection image has the same problem: fix the root
+  `Dockerfile` separately (outside Step 1).
+- The base image downloads an `amd64` `kubectl`. The Job does not use it
+  (`kubernetes.core` talks to the API directly), so it does not matter on
+  arm64.
 
 **RBAC** — `.github/k8s/ansible-runner-rbac.yml`:
 
@@ -1847,6 +2087,10 @@ rules:
   # Wait for the Ingress class after neutralization (sub-task 1.7)
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
+    verbs: [get, list]
+  # Wait for the node Deployments after neutralization (sub-task 1.7): read only
+  - apiGroups: [apps]
+    resources: [deployments]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -1877,7 +2121,10 @@ system:serviceaccount:default:ansible-runner`: allowed to create/delete
 Services, patch `ibppeers`/`ibporderers`, read Ingresses and
 `kube-system/configmaps/coredns`; denied any other `kube-system` ConfigMap,
 creating `ibppeers` or Deployments, and reading Secrets. Both manifests pass
-`kubectl apply --dry-run=server`.
+`kubectl apply --dry-run=server`. The `deployments` rule was added on
+2026-10-29: since sub-task 1.7, `neutralize_ingress.yml` waits for the node
+Deployment with `k8s_info`, which needs `get`/`list` on Deployments
+(creating one stays denied).
 
 The Job never creates CAs, peers or orderers itself: it asks the console's
 REST API, and the console's deployer and the operator create them with their
@@ -1913,7 +2160,7 @@ spec:
 `API_AUTHTYPE`, `API_KEY`, `K8S_NAMESPACE`, `INGRESS_TYPE`, `EXPOSE_CONSOLE`,
 `EXPOSE_CA`, `EXPOSE_PEER`, `EXPOSE_ORDERER`, `EXPOSED_DOMAIN`,
 `HLF_NETWORK_DOMAIN`, `CLUSTER_DOMAIN`, `NEUTRALIZE_NODE_INGRESSES`,
-`WAIT_TIMEOUT`. The console serves
+`CCAAS_PACKAGE_ONLY=true` (below), `WAIT_TIMEOUT`. The console serves
 **HTTPS** on 3000 with a certificate for the `exposed_domain` host (checked
 2026-10-16, check 4); the modules don't verify certificates, so this works.
 
@@ -1924,31 +2171,47 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
 `RUN_TESTS_MODE=destroy` (both options added to `run-tests.sh` in sub-task
 1.3). The CI step generates `TEST_RUN_ID` once and passes it to both Jobs.
 
+**Chaincode server (found 2026-10-29).** The deploy step of `run-tests.sh`
+calls `tutorial/deploy_chaincode_server.sh`, which builds and pushes the
+chaincode image with `docker`, then creates its Deployment and Service.
+The Job has neither `docker` nor the right to create a Deployment (J2), so:
+- the CI runner runs `deploy_chaincode_server.sh deploy` **before** the Job,
+  and `deploy_chaincode_server.sh destroy` **after** the destroy Job;
+- inside the Job, `CCAAS_PACKAGE_ONLY=true` makes the script only write
+  (deploy) or remove (destroy) the chaincode package that the install
+  playbooks read. The package only holds the server address
+  (`<server>.<ns>:9999`), so the runner and the Job build the same package
+  and the same package ID, which the server was started with.
+
 **Todo list:**
-- [ ] Add a `scenario` matrix dimension to the `fvtest` job in
+- [x] Add a `scenario` matrix dimension to the `fvtest` job in
   `.github/workflows/fvtest.yml` with values
   `[expose-all, expose-none, expose-none-internal]`. Set `fail-fast: false`
   on the matrix.
-- [ ] For `expose-all`: set `EXPOSE_CONSOLE=true`, `EXPOSE_CA=true`,
+- [x] For `expose-all`: set `EXPOSE_CONSOLE=true`, `EXPOSE_CA=true`,
   `EXPOSE_PEER=true`, `EXPOSE_ORDERER=true` in `$GITHUB_ENV`. Keep existing
   runner-side `run-tests.sh` invocation — this path is unchanged.
-- [ ] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
+- [x] For `expose-none`: set all four `EXPOSE_*` flags to `false` in
   `$GITHUB_ENV`, and `EXPOSED_DOMAIN` to the console domain: the organization
   roles build the node FQDNs of scenario C from it (sub-task 1.1). Keep
   `INGRESS_TYPE=nginx`.
-- [ ] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
+- [x] In every leg, export `EXPOSE_*`, `NAMESPACE`, `HLF_NETWORK_DOMAIN` and
   `CLUSTER_DOMAIN` **before** `kind_with_nginx.sh`: since sub-task 1.8 the
   script reads them to write the CoreDNS rules, before any playbook runs.
   They must match what `run-tests.sh` writes to `common-vars.yml` (sub-task
   1.3).
-- [ ] For `expose-none-internal`: same, plus
+- [x] For `expose-none-internal`: same without `EXPOSED_DOMAIN` (the node
+  FQDNs of scenario B don't use it), plus
   `HLF_NETWORK_DOMAIN=cluster.local` and `CLUSTER_DOMAIN=cluster.local`,
   exported before `kind_with_nginx.sh` and the console deployment (the
   console must be **created** with `spec.deployer.domain`, finding F1).
-- [ ] Create `.github/docker/ansible-runner/Dockerfile`,
+- [x] Create `.github/docker/ansible-runner/Dockerfile`,
   `.github/k8s/ansible-runner-rbac.yml` and `.github/k8s/ansible-runner-job.yml`
   as above.
-- [ ] Add the following CI steps, each guarded by
+- [x] Create `.github/scripts/wait-job.sh` (step 5) and add
+  `CCAAS_PACKAGE_ONLY` to `tutorial/deploy_chaincode_server.sh`
+  (*Chaincode server* above).
+- [x] Add the following CI steps, each guarded by
   `if: matrix.scenario != 'expose-all'`:
   1. **Build and load the images**:
      ```bash
@@ -1957,7 +2220,9 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
      kind load docker-image ansible-runner:ci
      ```
   2. **Apply RBAC**: `kubectl apply -f .github/k8s/ansible-runner-rbac.yml`
-  3. **Create the Job inputs**:
+  3. **Deploy the chaincode server** on the runner (see *Chaincode server*):
+     `tutorial/deploy_chaincode_server.sh deploy`
+  4. **Create the Job inputs**:
      ```bash
      kubectl create configmap ansible-runner-env \
        --from-literal=API_ENDPOINT="https://${CONSOLE_NAME}.${K8S_NAMESPACE}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000" \
@@ -1971,51 +2236,114 @@ a last CI step runs a second Job, `ansible-runner-destroy`, with
        --from-literal=HLF_NETWORK_DOMAIN="${HLF_NETWORK_DOMAIN:-}" \
        --from-literal=CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}" \
        --from-literal=NEUTRALIZE_NODE_INGRESSES="${NEUTRALIZE_NODE_INGRESSES:-}" \
+       --from-literal=CCAAS_PACKAGE_ONLY=true \
        --from-literal=WAIT_TIMEOUT=1800
      kubectl create secret generic ansible-runner-auth --from-literal=API_SECRET="${API_SECRET}"
      ```
-  4. **Run the Job**: `kubectl apply -f .github/k8s/ansible-runner-job.yml`
-  5. **Wait for it** (fails fast on a failed Job):
+  5. **Run the Job and wait for it** (fails fast on a failed Job):
      ```bash
-     kubectl wait --for=jsonpath='{.status.conditions[?(@.status=="True")].type}'=Complete \
-       --timeout=60m job/ansible-runner \
-     || { kubectl get job ansible-runner -o jsonpath='{.status.conditions}'; exit 1; }
+     kubectl apply -f .github/k8s/ansible-runner-job.yml
+     .github/scripts/wait-job.sh ansible-runner 3600
      ```
+     `wait-job.sh <job> [timeout]` polls the Job conditions every 10 s: exit
+     0 on `Complete`, exit 1 with the conditions as soon as `Failed` is true,
+     exit 1 after the timeout.
   6. **Retrieve logs** (`if: always() && matrix.scenario != 'expose-all'`):
      `kubectl logs job/ansible-runner --all-containers`
   7. **Reachability assertions** (sub-task 1.10), network still alive.
   8. **Destroy** (`if: always() && matrix.scenario != 'expose-all'`): a
      second Job, `ansible-runner-destroy`, same image and inputs plus
-     `RUN_TESTS_MODE=destroy`; wait for it and print its logs like steps 5–6.
-- [ ] Add `name: FV test (nginx / ${{ matrix.scenario }})` to the job.
-- [ ] Run `yamllint` on the workflow and the two manifests.
-- [ ] Try the Job locally first on the KIND cluster used for the
+     `RUN_TESTS_MODE=destroy`, then the chaincode server:
+     ```bash
+     yq -y '.metadata.name = "ansible-runner-destroy"
+            | .spec.template.spec.containers[0].env += [{"name": "RUN_TESTS_MODE", "value": "destroy"}]' \
+       .github/k8s/ansible-runner-job.yml | kubectl apply -f -
+     status=0
+     .github/scripts/wait-job.sh ansible-runner-destroy 1800 || status=$?
+     kubectl logs job/ansible-runner-destroy --all-containers || true
+     tutorial/deploy_chaincode_server.sh destroy
+     exit "${status}"
+     ```
+- [x] Add `name: FV test (nginx / ${{ matrix.scenario }})` to the job.
+- [x] Run `yamllint` on the workflow and the two manifests.
+- [x] Try the Job locally first on the KIND cluster used for the
   URL-MANAGEMENT-NEW.md checks (scenario C needs no console change; scenario B
   needs the console re-created with `spec.deployer.domain`).
 
 **Relevant context:**
 - The `expose-all` leg is entirely unaffected by this sub-task — the `if:`
   conditions ensure the Job steps are skipped when `matrix.scenario == 'expose-all'`.
-- A `kubectl wait --for=condition=complete` alone waits the full timeout
-  when the Job fails; the `jsonpath` form above returns as soon as the Job
-  has any final condition, and the `||` branch reports it.
+- `kubectl wait` cannot fail fast on a Job. Both
+  `--for=condition=complete` and
+  `--for=jsonpath='{.status.conditions[?(@.status=="True")].type}'=Complete`
+  return only when the Job completes: on a failed Job they wait the whole
+  timeout (tried 2026-10-29: a failed Job, a 40 s timeout, `timed out
+  waiting for the condition` after 40 s). Hence `wait-job.sh` (step 5).
 - The Job image must be available inside the KIND cluster (`kind load
   docker-image`, `imagePullPolicy: Never`).
 - Each Job starts from a fresh copy of the image, so nothing patched by the
   first Job survives into the destroy Job. Both therefore run `run-tests.sh`,
-  which re-applies the same patching, with the **same** `TEST_RUN_ID` taken
-  from `ansible-runner-env`: the randomised org and node names (Step 0
-  stamping) are identical, and the destroy finds what the first Job
-  created.
+  which re-applies the same patching from the same `ansible-runner-env`, so
+  the destroy finds what the first Job created. Today `run-tests.sh` does
+  not read `TEST_RUN_ID` (only `run-tutorial-tests.sh` stamps names): the
+  org and node names are the fixed ones of the tutorial vars. The ConfigMap
+  still carries one `TEST_RUN_ID` for both Jobs, ready for the Step 0
+  stamping.
 - Gateway API (`ingress_type: gateway-api`) matrix legs are **not** added in
   this step; leave a comment stub for Step 2.
 - Reference full matrix design: MIGRATION-PLAN.md §5.3.4.
+
+**Checked on 2026-10-29** (check 1.9 steps 1 to 7 and 9, local KIND on
+arm64, runner image and collection built from 1.5 to 1.9 merged locally).
+`yamllint` is clean and both images build. Step 8 (GitHub Actions) waits
+for this branch to be pushed.
+- **Run again on 2026-11-02**, on this branch on top of the merged 1.5 to
+  1.8 (images rebuilt, same local KIND on arm64), `network_domains` rule
+  tests included. **Scenario A**, not run since the wildcards are anchored
+  (1.8): `run-tests.sh` exits 0, 19 recaps with `failed=0`, the destroy
+  leaves nothing. **B, C and B with `NEUTRALIZE_NODE_INGRESSES=true`**: same
+  results as below (Job `Complete`, 16 recaps with `failed=0`, the destroy
+  leaves nothing).
+- **Scenario B**, first end-to-end run (URL-MANAGEMENT-NEW.md §9 check 5):
+  the console is created with `spec.deployer.domain:
+  default.svc.cluster.local`; the Job completes in 10 min, the 16
+  playbooks (01 to 23, chaincode included) end with `failed=0`; the 7 nodes
+  have `spec.domain: default.svc.cluster.local` and URLs
+  `https://<ns>-<cr>-<endpoint>.default.svc.cluster.local:443`; 16
+  per-endpoint Services. The destroy Job completes in 1 min and leaves no
+  CR, no collection Service and no chaincode server. The first try had
+  failed at the first enrollment (cryptography pin, above).
+- **Scenario C**: the first try failed at the first CA wait,
+  `Name or service not known`. The 1.8 CoreDNS rules were not anchored
+  with `\.$`, and glibc, unlike the Go resolver of the nodes, drops the
+  answer they give to the search-domain query (details and fix in the
+  1.8 text). `wait-job.sh` exited 1 two seconds after the Job became
+  `Failed` (`BackoffLimitExceeded`), as intended. With the fix: six
+  blocks, the Job completes in 10 min, 16 playbooks with `failed=0`, nodes
+  on `127-0-0-1.nip.io`, 16 Services; the destroy Job completes and leaves
+  nothing.
+- **Scenario B with `NEUTRALIZE_NODE_INGRESSES=true`** (the full run
+  deferred from 1.7): the Job completes in 11 min (the peers roll out once,
+  see 1.7), 16 playbooks with `failed=0`. Before the destroy, the 6 node
+  Ingresses (3 CAs, 2 peers, the orderer node) and their CRs have class
+  `none`; the parent `IBPOrderer` (`orderingservice`) has no Ingress. The
+  destroy Job completes and leaves nothing.
+- **A destroy can hang** (open point, sub-task 1.6): in that failed C try,
+  the destroy Job stayed 30 min on `Get the CA if it exists (unexposed)`.
+  `delete.yml` reads the node URLs with the `*_info` modules, which wait for
+  the node's health up to `wait_timeout` (1800 s here), and the CA was
+  unreachable. It would go on after those 1800 s (`failed_when: false`),
+  but the CI wait gives up first. A short `wait_timeout` on these reads is
+  enough: they only need the URLs, which the console returns.
 
 ### ✋  check 1.9
 
 **Proves:** the runner image and its RBAC work, the Job runs the whole test
 suite from inside the cluster in B and in C, and the three CI legs pass.
-Steps 1 to 7 run locally, before anything is pushed.
+Steps 1 to 7 run locally, before anything is pushed. They need sub-tasks
+1.5 to 1.8 (merged, or merged into a local integration branch): the
+runner image is built from the working tree, so it holds the collection
+under test, and `kind_with_nginx.sh` must have the 1.8 rules.
 
 1. `yamllint .github/workflows/fvtest.yml .github/k8s/`; build both images
    (CI step 1, without `kind load` yet).
@@ -2037,25 +2365,41 @@ Steps 1 to 7 run locally, before anything is pushed.
    kubectl auth can-i get configmap/coredns -n kube-system --as "$SA"     # yes
    kubectl auth can-i create services -n default --as "$SA"               # yes
    kubectl auth can-i patch ibppeers.ibp.com -n default --as "$SA"        # yes
+   kubectl auth can-i get deployments.apps -n default --as "$SA"          # yes
    kubectl auth can-i get secrets -n default --as "$SA"                   # no
    kubectl auth can-i get configmap/kube-proxy -n kube-system --as "$SA"  # no
+   kubectl auth can-i create deployments.apps -n default --as "$SA"       # no
+   kubectl auth can-i create ibppeers.ibp.com -n default --as "$SA"       # no
    ```
-4. Run the Job: CI steps 3 to 6, with `CONSOLE_NAME=hlf-console` and
-   `K8S_NAMESPACE=default`. Expected: the wait ends with `Complete`; the
-   logs show build, join and deploy finishing, and
-   `hlf_node_domain: default.svc.cluster.local`.
-5. Destroy Job (CI step 8). Expected: `Complete`;
-   `kubectl get ibpca,ibppeer,ibporderer -n "$NS"` and
-   `kubectl get svc -n "$NS" -l "$SEL"` find nothing. Before the next run,
-   delete the Jobs, `ansible-runner-env` and `ansible-runner-auth`.
+4. Run the Job: CI steps 3 to 6 (chaincode server, inputs, Job and wait,
+   logs), with `CONSOLE_NAME=hlf-console` and `K8S_NAMESPACE=default`; the
+   API values come from `_cfg/console-env.sh` (never echo them). Expected:
+   `job/ansible-runner: Complete`; every `PLAY RECAP` of the logs has
+   `failed=0`, through the chaincode playbooks; the node URLs in the logs
+   end with `.default.svc.cluster.local:443` (the domain itself is not
+   printed: `Set the HLF node domain` only shows `ok`); and
+   ```bash
+   kubectl get ibpca,ibppeer,ibporderer -n "$NS" -o custom-columns='KIND:.kind,NAME:.metadata.name,DOMAIN:.spec.domain'
+   ```
+   shows `default.svc.cluster.local` on every node.
+5. Destroy Job and chaincode server (CI step 8). Expected: `Complete`;
+   `kubectl get ibpca,ibppeer,ibporderer -n "$NS"`,
+   `kubectl get svc -n "$NS" -l "$SEL"` and
+   `kubectl get deploy -n "$NS" fabcar-ccaas` find nothing. Before the next
+   run, delete the Jobs, `ansible-runner-env` and `ansible-runner-auth`.
 6. Scenario C: steps 2 to 5 again with
-   `unset HLF_NETWORK_DOMAIN CLUSTER_DOMAIN`. Expected: `Complete` both
-   times; `hlf_node_domain` is the nip.io domain; CoreDNS has the six rules.
+   `unset HLF_NETWORK_DOMAIN CLUSTER_DOMAIN` and
+   `export EXPOSED_DOMAIN="$DOMAIN_A"`, as the CI leg does: the organization
+   roles build the node FQDNs of scenario C from it (sub-task 1.1). Expected:
+   CoreDNS has the six rules, every regex ending with `\.$` (sub-task
+   1.8); `Complete` both times; the nodes' `DOMAIN` is the nip.io domain.
 7. Scenario B with `NEUTRALIZE_NODE_INGRESSES=true` (the full run deferred
    from 1.7). Expected: `Complete`; before the destroy Job,
    `kubectl get ingress -n "$NS"` shows class `none` for every node Ingress.
-8. On GitHub Actions, for the pushed branch:
+8. On GitHub Actions, for the pushed branch (`fvtest.yml` only has a
+   `workflow_dispatch` trigger: a push does not start it):
    ```bash
+   gh workflow run fvtest.yml --ref "$(git branch --show-current)"
    gh run list --workflow fvtest.yml --branch "$(git branch --show-current)" --limit 1
    gh run view <run id>
    ```
@@ -2099,35 +2443,47 @@ in-cluster Ansible Job from sub-task 1.9 completes.
 
 **Todo list:**
 
-- [ ] **Assertion 1 — Unexposed Ingress objects are not served by nginx.**
+- [x] **Assertion 1 — Unexposed Ingress objects are not served by nginx.**
   The operator **always** creates the console and node Ingress objects (B2;
   no setting turns that off), so "no Ingress object" can never hold. The
   console Ingress must have class `unexposed_ingress_class` (sub-task 1.5);
   the node Ingress hosts must be under `hlf_node_domain`, and, with
-  `neutralize_node_ingresses: true` (sub-task 1.7), their class too:
+  `neutralize_node_ingresses: true` (sub-task 1.7), their class too. This one
+  runs from the runner, not from a pod: it checks what nginx serves from
+  outside. `DOMAIN` comes from the preamble below:
   ```bash
-  NS="${NAMESPACE:-default}"; UNSERVED="${UNEXPOSED_INGRESS_CLASS:-none}"
+  UNSERVED="${UNEXPOSED_INGRESS_CLASS:-none}"
   cls=$(kubectl get ingress -n "$NS" "$CONSOLE_NAME" -o jsonpath='{.spec.ingressClassName}')
   [ "$cls" = "$UNSERVED" ] || { echo "console Ingress class '$cls', expected '$UNSERVED'"; exit 1; }
-  code=$(curl -sk -o /dev/null -w '%{http_code}' "$CONSOLE_URL/ak/api/v3/health")
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$CONSOLE_URL/ak/api/v3/health") || code="curl exit $?"
   [ "$code" = 404 ] || { echo "console still served by nginx (HTTP $code)"; exit 1; }
+  for name in $(kubectl get ingress -n "$NS" -o jsonpath='{.items[*].metadata.name}'); do
+    [ "$name" != "$CONSOLE_NAME" ] || continue
+    for host in $(kubectl get ingress -n "$NS" "$name" -o jsonpath='{.spec.rules[*].host}'); do
+      [[ "$host" == *".$DOMAIN" ]] || { echo "Ingress $name: host $host is not under $DOMAIN"; exit 1; }
+    done
+    if [ "$NEUTRALIZED" = true ]; then
+      cls=$(kubectl get ingress -n "$NS" "$name" -o jsonpath='{.spec.ingressClassName}')
+      [ "$cls" = "$UNSERVED" ] || { echo "Ingress $name: class '$cls', expected '$UNSERVED'"; exit 1; }
+    fi
+  done
   ```
   _Failure indicates_: the console CR did not get `spec.ingress.class`, or
-  nginx serves the class (checked 2026-10-16: it does not, check 2).
+  nginx serves the class (checked 2026-10-16: it does not, check 2); a node
+  was created with another domain, or its CR was not neutralized.
 
-- [ ] **Assertion 2 — Console ClusterIP Service responds** at
-  `console_incluster_url` (HTTPS, Basic auth):
+- [x] **Assertion 2 — Console ClusterIP Service responds** at
+  `console_incluster_url` (HTTPS, Basic auth). The credentials go through
+  stdin (`curl -K -`), not in the spec of the pod:
   ```bash
-  kubectl run curl-console \
-    --image=curlimages/curl:8.10.1 --restart=Never --rm -i --quiet \
-    --namespace "$NS" --command -- \
-    curl -sfk -u "$API_KEY:$API_SECRET" \
-    "https://${CONSOLE_NAME}.${NS}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000/ak/api/v3/health"
+  printf 'user = "%s:%s"\n' "$API_KEY" "$API_SECRET" \
+    | incluster curl-console curlimages/curl:8.10.1 curl -sfk -o /dev/null --max-time 15 -K - \
+      "https://${CONSOLE_NAME}.${NS}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000/ak/api/v3/health"
   ```
   _Failure indicates_: the console pod is not running, the Service selector is
   wrong, or the credentials are wrong (401).
 
-- [ ] **Assertions 3–6 — common preamble.** Endpoints are discovered from
+- [x] **Assertions 1 and 3–6 — common preamble.** Endpoints are discovered from
   the labelled Services of sub-task 1.6, so no node name is hardcoded:
   ```bash
   NS="${NAMESPACE:-default}"
@@ -2143,30 +2499,32 @@ in-cluster Ansible Job from sub-task 1.9 completes.
       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
   }
   incluster() {  # incluster <name> <image> <cmd...>
-    kubectl run "$1" --image="$2" --restart=Never --rm -i --quiet \
-      --namespace "$NS" --command -- "${@:3}"
+    local name="$1" image="$2"; shift 2
+    kubectl delete pod "$name" -n "$NS" --ignore-not-found --wait=true >/dev/null
+    kubectl run "$name" --image="$image" --restart=Never --rm -i --quiet \
+      --pod-running-timeout=3m --namespace "$NS" --command -- "$@"
   }
   ```
 
-- [ ] **Assertion 3 — One Service per endpoint, correct target port, ready
+- [x] **Assertion 3 — One Service per endpoint, correct target port, ready
   backends.** Static check of the endpoint → port mapping table (sub-task
   1.6). It proves that `-operations`, `-grpcweb` and `-admin` do not
-  target the API port:
+  target the API port. A plain list, not an associative array: the macOS
+  bash (3.2) has none, and the script also runs from a laptop:
   ```bash
-  declare -A want=( [ca/ca]=7054 [ca/operations]=9443
-                    [peer/peer]=7051 [peer/operations]=9443 [peer/grpcweb]=7443
-                    [orderer/orderer]=7050 [orderer/admin]=9443
-                    [orderer/operations]=8443 [orderer/grpcweb]=7443 )
-  for key in "${!want[@]}"; do
-    comp="${key%/*}" ep="${key#*/}"
+  ENDPOINT_PORTS="ca/ca=7054 ca/operations=9443
+  peer/peer=7051 peer/operations=9443 peer/grpcweb=7443
+  orderer/orderer=7050 orderer/admin=9443 orderer/operations=8443 orderer/grpcweb=7443"
+  for entry in $ENDPOINT_PORTS; do
+    key="${entry%=*}" want="${entry#*=}" comp="${key%/*}" ep="${key#*/}"
     names=$(kubectl get svc -n "$NS" \
       -l "$SEL,fabric-ansible-collection/component=$comp,fabric-ansible-collection/endpoint=$ep" \
       -o jsonpath='{.items[*].metadata.name}')
     [ -n "$names" ] || { echo "No $comp '$ep' Service found"; exit 1; }
     for svc in $names; do
       port=$(kubectl get svc -n "$NS" "$svc" -o jsonpath='{.spec.ports[?(@.port==443)].targetPort}')
-      [ "$port" = "${want[$key]}" ] \
-        || { echo "$svc: 443 -> $port, expected ${want[$key]}"; exit 1; }
+      [ "$port" = "$want" ] \
+        || { echo "$svc: 443 -> $port, expected $want"; exit 1; }
       addrs=$(kubectl get endpoints -n "$NS" "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}')
       [ -n "$addrs" ] \
         || { echo "$svc has no ready backend (selector assumption S3?)"; exit 1; }
@@ -2174,26 +2532,27 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   done
   ```
   The `orderer/admin` entry is expected only on Fabric ≥ 2.4.1 (operator
-  gate). Drop it from `want` for older pinned versions.
+  gate). Drop it from `ENDPOINT_PORTS` for older pinned versions.
   _Failure indicates_: sub-task 1.6 skipped a component or endpoint type, or
   used a wrong target port, or the selector (S3) matches no pod.
 
-- [ ] **Assertion 4 — Every operations endpoint answers `/healthz` on `:443`
+- [x] **Assertion 4 — Every operations endpoint answers `/healthz` on `:443`
   through its FQDN.** This exercises CoreDNS rewrite + per-endpoint Service
   + port 9443/8443, the path used by the console status checks and the
-  collection's health waits:
+  collection's health waits. The URLs are passed as arguments of the pod's
+  script, so nothing has to be quoted into it:
   ```bash
   urls=$(svcs_of operations | sed "s|.*|https://&.${DOMAIN}/healthz|")
   incluster healthz curlimages/curl:8.10.1 sh -c '
-    for u in '"$(echo $urls)"'; do
-      curl -sk --connect-timeout 5 "$u" | grep -q "\"status\":\"OK\"" \
-        || { echo "FAIL $u"; exit 1; }
-    done'
+    for u in "$@"; do
+      curl -sk --connect-timeout 5 --max-time 15 "$u" | grep -q "\"status\":\"OK\"" \
+        || { echo "FAILED: $u"; exit 1; }
+    done' sh $urls
   ```
   _Failure indicates_: the `operations` rewrite is missing, the Service
   targets the API port, or the node is unhealthy.
 
-- [ ] **Assertion 5 — API, CA, grpcweb and admin endpoints accept TLS on
+- [x] **Assertion 5 — API, CA, grpcweb and admin endpoints accept TLS on
   `:443` through their FQDNs.** The CA `-ca` endpoint must return `/cainfo`
   JSON. For gRPC, grpcweb and the mTLS-only admin endpoint, a TLS-level
   answer is enough: curl exit 0, 35 (handshake alert, e.g. a client
@@ -2204,18 +2563,23 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   tls_urls=$(for ep in peer orderer grpcweb admin; do svcs_of "$ep"; done \
     | sed "s|.*|https://&.${DOMAIN}/|")
   incluster tls-check curlimages/curl:8.10.1 sh -c '
-    for u in '"$(echo $ca_urls)"'; do
-      curl -sk --connect-timeout 5 "$u" | grep -q '"CAName"' || { echo "FAIL $u"; exit 1; }
-    done
-    for u in '"$(echo $tls_urls)"'; do
-      rc=0; curl -sk -o /dev/null --connect-timeout 5 "$u" || rc=$?
-      case $rc in 0|35|56) ;; *) echo "FAIL $u (curl exit $rc)"; exit 1;; esac
-    done'
+    ca_count="$1"; shift
+    i=0
+    for u in "$@"; do
+      i=$((i + 1))
+      if [ "$i" -le "$ca_count" ]; then
+        curl -sk --connect-timeout 5 --max-time 15 "$u" | grep -q "\"CAName\"" \
+          || { echo "FAILED: $u"; exit 1; }
+      else
+        rc=0; curl -sk -o /dev/null --connect-timeout 5 --max-time 15 "$u" || rc=$?
+        case "$rc" in 0|35|56) ;; *) echo "FAILED: $u (curl exit $rc)"; exit 1 ;; esac
+      fi
+    done' sh "$(echo "$ca_urls" | wc -l | tr -d ' ')" $ca_urls $tls_urls
   ```
   _Failure indicates_: a rewrite for that endpoint type is missing, or the
   Service has no backend.
 
-- [ ] **Assertion 6 — Each endpoint FQDN resolves to its own Service's
+- [x] **Assertion 6 — Each endpoint FQDN resolves to its own Service's
   ClusterIP** (not nginx, and not a sibling endpoint's Service). In scenario
   C this confirms the sub-task 1.8 rewrites; in scenario B the FQDN is the
   Service FQDN itself, so it confirms plain kube-dns resolution:
@@ -2223,11 +2587,12 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   pairs=$(kubectl get svc -n "$NS" -l "$SEL" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.clusterIP}{" "}{end}')
   incluster dns-check busybox:1.36.1 sh -c '
-    for p in '"${pairs}"'; do
-      fqdn="${p%%=*}.'"${DOMAIN}"'"; want="${p#*=}"
+    domain="$1"; shift
+    for p in "$@"; do
+      fqdn="${p%%=*}.${domain}"; want="${p#*=}"
       got=$(nslookup "$fqdn" | awk "/^Address/ {a=\$2} END {print a}")
-      [ "$got" = "$want" ] || { echo "FAIL $fqdn -> $got, expected $want"; exit 1; }
-    done'
+      [ "$got" = "$want" ] || { echo "FAILED: $fqdn -> $got, expected $want"; exit 1; }
+    done' sh "$DOMAIN" $pairs
   ```
   _Failure indicates_: in scenario C, `coredns_endpoint_rewrites` was not
   emitted (check the `EXPOSE_*` / `HLF_NETWORK_DOMAIN` env passed to
@@ -2235,26 +2600,47 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   CoreDNS was not restarted. In scenario B, the console was not created
   with `spec.deployer.domain` (finding F1).
 
-- [ ] Put the six assertions in one script,
+- [x] Put the six assertions in one script,
   `.github/scripts/verify-unexposed-reachability.sh`, so they also run from a
   laptop against the local KIND cluster ( check 1.10). It prints each
   assertion name, then `OK` or the failure message.
-- [ ] Call it from a single `"Verify unexposed reachability"` step in
+- [x] Call it from a single `"Verify unexposed reachability"` step in
   `fvtest.yml`, conditioned on `if: matrix.scenario != 'expose-all'`.
-- [ ] Export `EXPOSED_DOMAIN` (the console domain, `<ip>.nip.io` in CI) in
-  both unexposed legs: in scenario C the preamble falls back to it, because
-  `HLF_NETWORK_DOMAIN` is unset there.
-- [ ] Use `set -euo pipefail` at the top of the script so the
+- [x] `EXPOSED_DOMAIN` (the console domain, `<ip>.nip.io` in CI): the
+  `expose-none` leg exports it since sub-task 1.9, and in scenario C the
+  preamble falls back to it, because `HLF_NETWORK_DOMAIN` is unset there.
+  Scenario B does not read it, so `expose-none-internal` needs nothing more.
+- [x] Use `set -euo pipefail` at the top of the script so the
   first failing assertion aborts the step. Commands whose non-zero exit is
   expected are wrapped as `rc=0; cmd || rc=$?`.
 
 **Relevant context:**
-- `CONSOLE_NAME`, `CONSOLE_URL`, `API_KEY`, `API_SECRET` come from
-  `_cfg/console-env.sh` / the CI environment (`deploy-console.sh`).
+- `API_KEY` and `API_SECRET` come from `_cfg/console-env.sh` or the CI
+  environment. `CONSOLE_URL` defaults to `API_ENDPOINT`, `CONSOLE_NAME` to
+  `hlf-console`.
 - Assertions 3–6 cover **every** endpoint of **every** node, discovered from
   the `fabric-ansible-collection/*` labels. Adding peers or orderer nodes
   needs no change here.
 - Sub-tasks 1.6 and 1.8 must be complete before assertions 3–6 can pass.
+
+**Checked on 2026-11-02** (check 1.10 steps 1 to 5 and 7, local KIND on arm64,
+networks built by the Job of 1.9, on top of 1.5 to 1.9). `bash -n` with bash
+3.2 and 5, `shellcheck`, `yamllint` and `actionlint` are clean. Step 6
+(GitHub Actions) waits for this branch to be pushed, after 1.9.
+- **Positive runs:** the six assertions pass in B, in C (where assertion 6
+  proves the rewrites) and in B with `NEUTRALIZE_NODE_INGRESSES=true`. Every
+  network: the Job has 16 recaps with `failed=0`, the destroy Job leaves
+  nothing, no ephemeral pod is left.
+- **Negative runs, as in the check:** wrong target port, assertion 3 fails with
+  `default-org1peer-operations: 443 -> 7051, expected 9443`; console back on
+  nginx, assertion 1 fails with `console Ingress class 'nginx', expected
+  'none'`. Each time, the six assertions pass again once the change is undone.
+- **Negative runs, added:** on a test Ingress, assertion 1 fails on class
+  `nginx` with `NEUTRALIZE_NODE_INGRESSES=true`, and on a host outside
+  `DOMAIN`. A wrong `API_SECRET` fails assertion 2, which proves that the
+  credentials do reach curl through stdin.
+- **Not proven:** the failure paths of assertions 4, 5 and 6 were not
+  triggered: no run broke a rewrite or a node.
 
 ### ✋  check 1.10
 

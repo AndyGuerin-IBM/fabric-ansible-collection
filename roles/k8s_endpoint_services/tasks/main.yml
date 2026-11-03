@@ -1,0 +1,41 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+# One ClusterIP Service per endpoint of every node: port 443 to the native
+# port of that endpoint. The operator advertises <fqdn>:443 for every
+# endpoint, and a Service port maps 443 to exactly one targetPort, so the
+# operator's own Services cannot serve them. Each Service is named after the
+# first DNS label of the FQDN the operator builds:
+#   <namespace>-<cr_name>-<endpoint>
+# The operator's Services are never modified.
+
+- name: Work out the operator CR names
+  ansible.builtin.include_tasks: cr_names.yml
+
+- name: Check every Service name is a valid DNS-1035 label
+  ansible.builtin.assert:
+    that:
+      - _svc_name is match('^[a-z]([-a-z0-9]*[a-z0-9])?$')
+      - _svc_name | length <= 63
+    fail_msg: >-
+      Service name '{{ _svc_name }}' is not a valid DNS-1035 label. Shorten the
+      namespace or the component display name.
+    quiet: true
+  loop: "{{ k8s_endpoint_services_effective_cr_names | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component]) | list }}"
+  loop_control:
+    label: "{{ _svc_name }}"
+  vars:
+    _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"
+
+- name: Create one ClusterIP Service per endpoint
+  kubernetes.core.k8s:
+    state: present
+    # Rendered from a template and parsed as YAML: an inline
+    # targetPort: "{{ ... | int }}" would reach Kubernetes as a string.
+    definition: "{{ lookup('ansible.builtin.template', 'service.yml.j2') | from_yaml }}"
+  loop: "{{ k8s_endpoint_services_effective_cr_names | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component]) | list }}"
+  loop_control:
+    label: "{{ _svc_name }}"
+  vars:
+    _svc_name: "{{ k8s_endpoint_services_namespace }}-{{ item.0 }}-{{ item.1.endpoint }}"

@@ -1,0 +1,27 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs .github/scripts/run-tests.sh inside the KIND cluster (MIGRATION-STEP-1
+# sub-task 1.9). The CI creates the inputs (ansible-runner-env,
+# ansible-runner-auth) and, for the destroy, a copy of this Job named
+# ansible-runner-destroy with RUN_TESTS_MODE=destroy.
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: ansible-runner, namespace: default}
+spec:
+  backoffLimit: 0                 # a failed run must fail the CI step, not retry
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      serviceAccountName: ansible-runner
+      restartPolicy: Never
+      containers:
+        - name: runner
+          image: ansible-runner:ci
+          imagePullPolicy: Never  # loaded with `kind load docker-image`
+          envFrom:
+            - configMapRef: {name: ansible-runner-env}   # created by the CI step
+          env:
+            - name: API_SECRET
+              valueFrom: {secretKeyRef: {name: ansible-runner-auth, key: API_SECRET}}

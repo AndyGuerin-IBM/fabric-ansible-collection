@@ -9,6 +9,38 @@
   vars:
       network_domains_namespace: "{{ k8s_namespace | default('') }}"
 
+# The CR names of the Services to delete are read from the URLs of the nodes,
+# before the nodes are deleted. A node that does not answer must not block the
+# deletion: its CR name is then worked out from its display name.
+- name: Get the CA if it exists (unexposed)
+  hyperledger.fabric_ansible_collection.certificate_authority_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ca_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: endorsing_organization_ca_info
+  failed_when: false
+  when: not expose_ca | bool
+
+- name: Get the peers if they exist (unexposed)
+  hyperledger.fabric_ansible_collection.peer_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ peer_name if peers == 1 else peer_name ~ item }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  loop: "{{ range(1, peers + 1, 1) | list }}"
+  register: endorsing_organization_peers_info
+  failed_when: false
+  when: not expose_peer | bool
+
 - name: Delete certificate authority
   hyperledger.fabric_ansible_collection.certificate_authority:
       state: "{{ state }}"
@@ -19,6 +51,17 @@
       api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
       api_timeout: "{{ api_timeout | default(omit) }}"
       name: "{{ ca_name }}"
+
+- name: Delete the per-endpoint Services of the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: delete
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [endorsing_organization_ca_info.certificate_authority.api_url | default('')] }}"
+  when: not expose_ca | bool
 
 - name: Delete certificate authority admin
   hyperledger.fabric_ansible_collection.enrolled_identity:
@@ -77,3 +120,16 @@
       name: "{{ peer_name }}{{ item }}"
   loop: "{{ range(1, peers + 1, 1) | list }}"
   when: peers > 1
+
+- name: Delete the per-endpoint Services of the peers (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: delete
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: peer
+      k8s_endpoint_services_display_name: "{{ peer_name }}"
+      k8s_endpoint_services_count: "{{ peers }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ endorsing_organization_peers_info.results | map(attribute='peer', default={}) | map(attribute='api_url', default='') | list }}
+  when: not expose_peer | bool

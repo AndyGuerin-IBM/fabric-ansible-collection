@@ -9,6 +9,37 @@
   vars:
       network_domains_namespace: "{{ k8s_namespace | default('') }}"
 
+# The CR names of the Services to delete are read from the URLs of the nodes,
+# before the nodes are deleted. A node that does not answer must not block the
+# deletion: its CR name is then worked out from its display name.
+- name: Get the CA if it exists (unexposed)
+  hyperledger.fabric_ansible_collection.certificate_authority_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ca_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_ca_info
+  failed_when: false
+  when: not expose_ca | bool
+
+- name: Get the ordering service if it exists (unexposed)
+  hyperledger.fabric_ansible_collection.ordering_service_info:
+      api_endpoint: "{{ api_endpoint }}"
+      api_authtype: "{{ api_authtype }}"
+      api_key: "{{ api_key }}"
+      api_secret: "{{ api_secret | default(omit) }}"
+      api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
+      api_timeout: "{{ api_timeout | default(omit) }}"
+      name: "{{ ordering_service_name }}"
+      wait_timeout: "{{ wait_timeout | default(omit) }}"
+  register: ordering_organization_os_info
+  failed_when: false
+  when: not expose_orderer | bool
+
 - name: Delete certificate authority
   hyperledger.fabric_ansible_collection.certificate_authority:
       state: "{{ state }}"
@@ -19,6 +50,17 @@
       api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
       api_timeout: "{{ api_timeout | default(omit) }}"
       name: "{{ ca_name }}"
+
+- name: Delete the per-endpoint Services of the CA (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: delete
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: ca
+      k8s_endpoint_services_display_name: "{{ ca_name }}"
+      k8s_endpoint_services_existing_urls: "{{ [ordering_organization_ca_info.certificate_authority.api_url | default('')] }}"
+  when: not expose_ca | bool
 
 - name: Delete certificate authority admin
   hyperledger.fabric_ansible_collection.enrolled_identity:
@@ -63,3 +105,16 @@
       api_token_endpoint: "{{ api_token_endpoint | default(omit) }}"
       api_timeout: "{{ api_timeout | default(omit) }}"
       name: "{{ ordering_service_name }}"
+
+- name: Delete the per-endpoint Services of the ordering nodes (unexposed)
+  include_role:
+      name: hyperledger.fabric_ansible_collection.k8s_endpoint_services
+      tasks_from: delete
+  vars:
+      k8s_endpoint_services_namespace: "{{ k8s_namespace }}"
+      k8s_endpoint_services_component: orderer
+      k8s_endpoint_services_display_name: "{{ ordering_service_name }}"
+      k8s_endpoint_services_count: "{{ ordering_service_nodes }}"
+      k8s_endpoint_services_existing_urls: >-
+          {{ ordering_organization_os_info.ordering_service | default([]) | map(attribute='api_url') | list }}
+  when: not expose_orderer | bool

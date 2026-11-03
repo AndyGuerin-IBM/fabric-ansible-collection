@@ -1,0 +1,34 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+---
+# Every URL the console returned for the nodes has a Service created by this
+# role. It catches a wrong CR name (the console, not the operator, derives it
+# from the display name) and an endpoint the health wait does not exercise
+# (grpcweb, admin).
+- name: Work out the operator CR names
+  ansible.builtin.include_tasks: cr_names.yml
+
+- name: Assert every console endpoint URL has a matching per-endpoint Service
+  ansible.builtin.assert:
+    that:
+      - _label in _expected_names
+    fail_msg: >-
+      The console advertises '{{ item }}' but no Service named '{{ _label }}'
+      was created: the CR name guessed from the display name was wrong. The
+      console's CR name is '{{ _actual_cr_name }}'. Check the rules that
+      derive a CR name from a display name (k8s_endpoint_services_cr_name_regex
+      and k8s_endpoint_services_orderer_node_suffix).
+    quiet: true
+  loop: "{{ k8s_endpoint_services_urls | select | list }}"
+  vars:
+    _label: "{{ (item | urlsplit('hostname')).split('.') | first }}"
+    # <namespace>-<cr_name>-<endpoint>: drop the namespace prefix and the
+    # endpoint suffix. A CR name has no '-'.
+    _actual_cr_name: "{{ _label | regex_replace('^' ~ k8s_endpoint_services_namespace ~ '-', '') | regex_replace('-[^-]*$', '') }}"
+    _expected_names: >-
+      {{ k8s_endpoint_services_effective_cr_names
+         | product(k8s_endpoint_services_endpoints[k8s_endpoint_services_component] | map(attribute='endpoint'))
+         | map('join', '-')
+         | map('regex_replace', '^', k8s_endpoint_services_namespace ~ '-')
+         | list }}

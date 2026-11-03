@@ -11,6 +11,11 @@
 # Needs docker, kubectl and yq. CCAAS_IMAGE sets the image (default: the local
 # registry of the KIND cluster, localhost:5000).
 #
+# CCAAS_PACKAGE_ONLY=true: only write (deploy) or remove (destroy) the package.
+# The server is deployed and destroyed by the caller, which has docker and the
+# rights to create a Deployment: the CI runner, for the tests that run in an
+# in-cluster Job without either (MIGRATION-STEP-1 sub-task 1.9).
+#
 set -e
 cd "$(dirname "$0")"
 
@@ -27,11 +32,14 @@ SOURCE_PACKAGE="${SOURCE_PACKAGE:-${NAME}@${VERSION}.tgz}"
 SERVER="$(echo "${NAME}-ccaas" | tr '[:upper:]_' '[:lower:]-')"
 IMAGE="${CCAAS_IMAGE:-localhost:5000/${SERVER}:${VERSION}}"
 PORT=9999
+PACKAGE_ONLY="${CCAAS_PACKAGE_ONLY:-false}"
 
 if [ "$1" = "deploy" ]; then
     set -x
-    docker build -t "${IMAGE}" -f ccaas/Dockerfile --build-arg SOURCE_PACKAGE="${SOURCE_PACKAGE}" .
-    docker push "${IMAGE}"
+    if [ "${PACKAGE_ONLY}" != "true" ]; then
+        docker build -t "${IMAGE}" -f ccaas/Dockerfile --build-arg SOURCE_PACKAGE="${SOURCE_PACKAGE}" .
+        docker push "${IMAGE}"
+    fi
 
     # The package only holds the address of the server. Same label and address
     # give the same package, so the same package ID.
@@ -57,6 +65,10 @@ with open(out, "wb") as f:
 print(f"{label}:{hashlib.sha256(package).hexdigest()}")
 PY
 )
+    if [ "${PACKAGE_ONLY}" = "true" ]; then
+        set +x
+        exit 0
+    fi
 
     kubectl -n "${NAMESPACE}" apply -f - <<MANIFEST
 apiVersion: apps/v1
@@ -97,7 +109,9 @@ MANIFEST
     set +x
 elif [ "$1" = "destroy" ]; then
     set -x
-    kubectl -n "${NAMESPACE}" delete deployment,service "${SERVER}" --ignore-not-found
+    if [ "${PACKAGE_ONLY}" != "true" ]; then
+        kubectl -n "${NAMESPACE}" delete deployment,service "${SERVER}" --ignore-not-found
+    fi
     rm -f "${PACKAGE}"
     set +x
 else

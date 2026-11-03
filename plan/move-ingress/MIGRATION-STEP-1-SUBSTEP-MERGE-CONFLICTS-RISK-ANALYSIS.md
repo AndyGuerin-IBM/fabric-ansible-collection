@@ -28,7 +28,7 @@ A sub-task can need another one for three different reasons:
 | 1.7 node Ingress neutralization | `roles/endorsing_organization/tasks/create.yml`; `roles/ordering_organization/tasks/create.yml`; `roles/k8s_endpoint_services/` (`tasks/neutralize_ingress.yml` new, `defaults/main.yml`); `docs/source/roles/k8s-endpoint-services.rst`; `plan/move-ingress/MIGRATION-STEP-1.md` (1.7 text only) |
 | 1.8 CoreDNS rewrites | `.github/scripts/kind_with_nginx.sh`; `plan/move-ingress/MIGRATION-STEP-1.md` (1.8 text only) |
 | 1.9 CI legs and Job | `.github/workflows/fvtest.yml`; `.github/docker/ansible-runner/Dockerfile` (new); `.github/k8s/ansible-runner-{rbac,job}.yml` (new); `.github/scripts/wait-job.sh` (new, fail-fast Job wait); `tutorial/deploy_chaincode_server.sh` (`CCAAS_PACKAGE_ONLY`: the Job only writes the chaincode package); `plan/move-ingress/MIGRATION-STEP-1.md` (1.9 text only) |
-| 1.10 reachability assertions | `.github/scripts/verify-unexposed-reachability.sh` (new); `.github/workflows/fvtest.yml` (one step) |
+| 1.10 reachability assertions | `.github/scripts/verify-unexposed-reachability.sh` (new); `.github/workflows/fvtest.yml` (one step); `plan/move-ingress/MIGRATION-STEP-1.md` (1.10 text only) |
 | 1.11 tutorial, everything exposed | `docs/source/tutorials/` (a section in `oss-installing.rst`, or a new page plus one line in `docs/source/index.rst`) |
 | 1.12 tutorial, nothing exposed | `docs/source/tutorials/nginx-no-expose.rst` (new); `docs/source/index.rst` (one line) |
 

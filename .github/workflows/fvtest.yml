@@ -154,7 +154,10 @@ jobs:
       - name: Logs of the tests
         if: always() && matrix.scenario != 'expose-all'
         run: kubectl logs job/ansible-runner --all-containers || true
-      # Reachability assertions (sub-task 1.10) go here, while the network is alive.
+      - name: Verify unexposed reachability
+        # The network is still alive: the destroy step below removes it.
+        if: matrix.scenario != 'expose-all'
+        run: .github/scripts/verify-unexposed-reachability.sh
       - name: Destroy the network
         if: always() && matrix.scenario != 'expose-all'
         run: |

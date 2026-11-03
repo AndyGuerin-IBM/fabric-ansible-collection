@@ -2443,35 +2443,47 @@ in-cluster Ansible Job from sub-task 1.9 completes.
 
 **Todo list:**
 
-- [ ] **Assertion 1 — Unexposed Ingress objects are not served by nginx.**
+- [x] **Assertion 1 — Unexposed Ingress objects are not served by nginx.**
   The operator **always** creates the console and node Ingress objects (B2;
   no setting turns that off), so "no Ingress object" can never hold. The
   console Ingress must have class `unexposed_ingress_class` (sub-task 1.5);
   the node Ingress hosts must be under `hlf_node_domain`, and, with
-  `neutralize_node_ingresses: true` (sub-task 1.7), their class too:
+  `neutralize_node_ingresses: true` (sub-task 1.7), their class too. This one
+  runs from the runner, not from a pod: it checks what nginx serves from
+  outside. `DOMAIN` comes from the preamble below:
   ```bash
-  NS="${NAMESPACE:-default}"; UNSERVED="${UNEXPOSED_INGRESS_CLASS:-none}"
+  UNSERVED="${UNEXPOSED_INGRESS_CLASS:-none}"
   cls=$(kubectl get ingress -n "$NS" "$CONSOLE_NAME" -o jsonpath='{.spec.ingressClassName}')
   [ "$cls" = "$UNSERVED" ] || { echo "console Ingress class '$cls', expected '$UNSERVED'"; exit 1; }
-  code=$(curl -sk -o /dev/null -w '%{http_code}' "$CONSOLE_URL/ak/api/v3/health")
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$CONSOLE_URL/ak/api/v3/health") || code="curl exit $?"
   [ "$code" = 404 ] || { echo "console still served by nginx (HTTP $code)"; exit 1; }
+  for name in $(kubectl get ingress -n "$NS" -o jsonpath='{.items[*].metadata.name}'); do
+    [ "$name" != "$CONSOLE_NAME" ] || continue
+    for host in $(kubectl get ingress -n "$NS" "$name" -o jsonpath='{.spec.rules[*].host}'); do
+      [[ "$host" == *".$DOMAIN" ]] || { echo "Ingress $name: host $host is not under $DOMAIN"; exit 1; }
+    done
+    if [ "$NEUTRALIZED" = true ]; then
+      cls=$(kubectl get ingress -n "$NS" "$name" -o jsonpath='{.spec.ingressClassName}')
+      [ "$cls" = "$UNSERVED" ] || { echo "Ingress $name: class '$cls', expected '$UNSERVED'"; exit 1; }
+    fi
+  done
   ```
   _Failure indicates_: the console CR did not get `spec.ingress.class`, or
-  nginx serves the class (checked 2026-10-16: it does not, check 2).
+  nginx serves the class (checked 2026-10-16: it does not, check 2); a node
+  was created with another domain, or its CR was not neutralized.
 
-- [ ] **Assertion 2 — Console ClusterIP Service responds** at
-  `console_incluster_url` (HTTPS, Basic auth):
+- [x] **Assertion 2 — Console ClusterIP Service responds** at
+  `console_incluster_url` (HTTPS, Basic auth). The credentials go through
+  stdin (`curl -K -`), not in the spec of the pod:
   ```bash
-  kubectl run curl-console \
-    --image=curlimages/curl:8.10.1 --restart=Never --rm -i --quiet \
-    --namespace "$NS" --command -- \
-    curl -sfk -u "$API_KEY:$API_SECRET" \
-    "https://${CONSOLE_NAME}.${NS}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000/ak/api/v3/health"
+  printf 'user = "%s:%s"\n' "$API_KEY" "$API_SECRET" \
+    | incluster curl-console curlimages/curl:8.10.1 curl -sfk -o /dev/null --max-time 15 -K - \
+      "https://${CONSOLE_NAME}.${NS}.svc.${CLUSTER_DOMAIN:-cluster.local}:3000/ak/api/v3/health"
   ```
   _Failure indicates_: the console pod is not running, the Service selector is
   wrong, or the credentials are wrong (401).
 
-- [ ] **Assertions 3–6 — common preamble.** Endpoints are discovered from
+- [x] **Assertions 1 and 3–6 — common preamble.** Endpoints are discovered from
   the labelled Services of sub-task 1.6, so no node name is hardcoded:
   ```bash
   NS="${NAMESPACE:-default}"
@@ -2487,30 +2499,32 @@ in-cluster Ansible Job from sub-task 1.9 completes.
       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
   }
   incluster() {  # incluster <name> <image> <cmd...>
-    kubectl run "$1" --image="$2" --restart=Never --rm -i --quiet \
-      --namespace "$NS" --command -- "${@:3}"
+    local name="$1" image="$2"; shift 2
+    kubectl delete pod "$name" -n "$NS" --ignore-not-found --wait=true >/dev/null
+    kubectl run "$name" --image="$image" --restart=Never --rm -i --quiet \
+      --pod-running-timeout=3m --namespace "$NS" --command -- "$@"
   }
   ```
 
-- [ ] **Assertion 3 — One Service per endpoint, correct target port, ready
+- [x] **Assertion 3 — One Service per endpoint, correct target port, ready
   backends.** Static check of the endpoint → port mapping table (sub-task
   1.6). It proves that `-operations`, `-grpcweb` and `-admin` do not
-  target the API port:
+  target the API port. A plain list, not an associative array: the macOS
+  bash (3.2) has none, and the script also runs from a laptop:
   ```bash
-  declare -A want=( [ca/ca]=7054 [ca/operations]=9443
-                    [peer/peer]=7051 [peer/operations]=9443 [peer/grpcweb]=7443
-                    [orderer/orderer]=7050 [orderer/admin]=9443
-                    [orderer/operations]=8443 [orderer/grpcweb]=7443 )
-  for key in "${!want[@]}"; do
-    comp="${key%/*}" ep="${key#*/}"
+  ENDPOINT_PORTS="ca/ca=7054 ca/operations=9443
+  peer/peer=7051 peer/operations=9443 peer/grpcweb=7443
+  orderer/orderer=7050 orderer/admin=9443 orderer/operations=8443 orderer/grpcweb=7443"
+  for entry in $ENDPOINT_PORTS; do
+    key="${entry%=*}" want="${entry#*=}" comp="${key%/*}" ep="${key#*/}"
     names=$(kubectl get svc -n "$NS" \
       -l "$SEL,fabric-ansible-collection/component=$comp,fabric-ansible-collection/endpoint=$ep" \
       -o jsonpath='{.items[*].metadata.name}')
     [ -n "$names" ] || { echo "No $comp '$ep' Service found"; exit 1; }
     for svc in $names; do
       port=$(kubectl get svc -n "$NS" "$svc" -o jsonpath='{.spec.ports[?(@.port==443)].targetPort}')
-      [ "$port" = "${want[$key]}" ] \
-        || { echo "$svc: 443 -> $port, expected ${want[$key]}"; exit 1; }
+      [ "$port" = "$want" ] \
+        || { echo "$svc: 443 -> $port, expected $want"; exit 1; }
       addrs=$(kubectl get endpoints -n "$NS" "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}')
       [ -n "$addrs" ] \
         || { echo "$svc has no ready backend (selector assumption S3?)"; exit 1; }
@@ -2518,26 +2532,27 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   done
   ```
   The `orderer/admin` entry is expected only on Fabric ≥ 2.4.1 (operator
-  gate). Drop it from `want` for older pinned versions.
+  gate). Drop it from `ENDPOINT_PORTS` for older pinned versions.
   _Failure indicates_: sub-task 1.6 skipped a component or endpoint type, or
   used a wrong target port, or the selector (S3) matches no pod.
 
-- [ ] **Assertion 4 — Every operations endpoint answers `/healthz` on `:443`
+- [x] **Assertion 4 — Every operations endpoint answers `/healthz` on `:443`
   through its FQDN.** This exercises CoreDNS rewrite + per-endpoint Service
   + port 9443/8443, the path used by the console status checks and the
-  collection's health waits:
+  collection's health waits. The URLs are passed as arguments of the pod's
+  script, so nothing has to be quoted into it:
   ```bash
   urls=$(svcs_of operations | sed "s|.*|https://&.${DOMAIN}/healthz|")
   incluster healthz curlimages/curl:8.10.1 sh -c '
-    for u in '"$(echo $urls)"'; do
-      curl -sk --connect-timeout 5 "$u" | grep -q "\"status\":\"OK\"" \
-        || { echo "FAIL $u"; exit 1; }
-    done'
+    for u in "$@"; do
+      curl -sk --connect-timeout 5 --max-time 15 "$u" | grep -q "\"status\":\"OK\"" \
+        || { echo "FAILED: $u"; exit 1; }
+    done' sh $urls
   ```
   _Failure indicates_: the `operations` rewrite is missing, the Service
   targets the API port, or the node is unhealthy.
 
-- [ ] **Assertion 5 — API, CA, grpcweb and admin endpoints accept TLS on
+- [x] **Assertion 5 — API, CA, grpcweb and admin endpoints accept TLS on
   `:443` through their FQDNs.** The CA `-ca` endpoint must return `/cainfo`
   JSON. For gRPC, grpcweb and the mTLS-only admin endpoint, a TLS-level
   answer is enough: curl exit 0, 35 (handshake alert, e.g. a client
@@ -2548,18 +2563,23 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   tls_urls=$(for ep in peer orderer grpcweb admin; do svcs_of "$ep"; done \
     | sed "s|.*|https://&.${DOMAIN}/|")
   incluster tls-check curlimages/curl:8.10.1 sh -c '
-    for u in '"$(echo $ca_urls)"'; do
-      curl -sk --connect-timeout 5 "$u" | grep -q '"CAName"' || { echo "FAIL $u"; exit 1; }
-    done
-    for u in '"$(echo $tls_urls)"'; do
-      rc=0; curl -sk -o /dev/null --connect-timeout 5 "$u" || rc=$?
-      case $rc in 0|35|56) ;; *) echo "FAIL $u (curl exit $rc)"; exit 1;; esac
-    done'
+    ca_count="$1"; shift
+    i=0
+    for u in "$@"; do
+      i=$((i + 1))
+      if [ "$i" -le "$ca_count" ]; then
+        curl -sk --connect-timeout 5 --max-time 15 "$u" | grep -q "\"CAName\"" \
+          || { echo "FAILED: $u"; exit 1; }
+      else
+        rc=0; curl -sk -o /dev/null --connect-timeout 5 --max-time 15 "$u" || rc=$?
+        case "$rc" in 0|35|56) ;; *) echo "FAILED: $u (curl exit $rc)"; exit 1 ;; esac
+      fi
+    done' sh "$(echo "$ca_urls" | wc -l | tr -d ' ')" $ca_urls $tls_urls
   ```
   _Failure indicates_: a rewrite for that endpoint type is missing, or the
   Service has no backend.
 
-- [ ] **Assertion 6 — Each endpoint FQDN resolves to its own Service's
+- [x] **Assertion 6 — Each endpoint FQDN resolves to its own Service's
   ClusterIP** (not nginx, and not a sibling endpoint's Service). In scenario
   C this confirms the sub-task 1.8 rewrites; in scenario B the FQDN is the
   Service FQDN itself, so it confirms plain kube-dns resolution:
@@ -2567,11 +2587,12 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   pairs=$(kubectl get svc -n "$NS" -l "$SEL" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.clusterIP}{" "}{end}')
   incluster dns-check busybox:1.36.1 sh -c '
-    for p in '"${pairs}"'; do
-      fqdn="${p%%=*}.'"${DOMAIN}"'"; want="${p#*=}"
+    domain="$1"; shift
+    for p in "$@"; do
+      fqdn="${p%%=*}.${domain}"; want="${p#*=}"
       got=$(nslookup "$fqdn" | awk "/^Address/ {a=\$2} END {print a}")
-      [ "$got" = "$want" ] || { echo "FAIL $fqdn -> $got, expected $want"; exit 1; }
-    done'
+      [ "$got" = "$want" ] || { echo "FAILED: $fqdn -> $got, expected $want"; exit 1; }
+    done' sh "$DOMAIN" $pairs
   ```
   _Failure indicates_: in scenario C, `coredns_endpoint_rewrites` was not
   emitted (check the `EXPOSE_*` / `HLF_NETWORK_DOMAIN` env passed to
@@ -2579,26 +2600,47 @@ in-cluster Ansible Job from sub-task 1.9 completes.
   CoreDNS was not restarted. In scenario B, the console was not created
   with `spec.deployer.domain` (finding F1).
 
-- [ ] Put the six assertions in one script,
+- [x] Put the six assertions in one script,
   `.github/scripts/verify-unexposed-reachability.sh`, so they also run from a
   laptop against the local KIND cluster ( check 1.10). It prints each
   assertion name, then `OK` or the failure message.
-- [ ] Call it from a single `"Verify unexposed reachability"` step in
+- [x] Call it from a single `"Verify unexposed reachability"` step in
   `fvtest.yml`, conditioned on `if: matrix.scenario != 'expose-all'`.
-- [ ] Export `EXPOSED_DOMAIN` (the console domain, `<ip>.nip.io` in CI) in
-  both unexposed legs: in scenario C the preamble falls back to it, because
-  `HLF_NETWORK_DOMAIN` is unset there.
-- [ ] Use `set -euo pipefail` at the top of the script so the
+- [x] `EXPOSED_DOMAIN` (the console domain, `<ip>.nip.io` in CI): the
+  `expose-none` leg exports it since sub-task 1.9, and in scenario C the
+  preamble falls back to it, because `HLF_NETWORK_DOMAIN` is unset there.
+  Scenario B does not read it, so `expose-none-internal` needs nothing more.
+- [x] Use `set -euo pipefail` at the top of the script so the
   first failing assertion aborts the step. Commands whose non-zero exit is
   expected are wrapped as `rc=0; cmd || rc=$?`.
 
 **Relevant context:**
-- `CONSOLE_NAME`, `CONSOLE_URL`, `API_KEY`, `API_SECRET` come from
-  `_cfg/console-env.sh` / the CI environment (`deploy-console.sh`).
+- `API_KEY` and `API_SECRET` come from `_cfg/console-env.sh` or the CI
+  environment. `CONSOLE_URL` defaults to `API_ENDPOINT`, `CONSOLE_NAME` to
+  `hlf-console`.
 - Assertions 3–6 cover **every** endpoint of **every** node, discovered from
   the `fabric-ansible-collection/*` labels. Adding peers or orderer nodes
   needs no change here.
 - Sub-tasks 1.6 and 1.8 must be complete before assertions 3–6 can pass.
+
+**Checked on 2026-11-02** (check 1.10 steps 1 to 5 and 7, local KIND on arm64,
+networks built by the Job of 1.9, on top of 1.5 to 1.9). `bash -n` with bash
+3.2 and 5, `shellcheck`, `yamllint` and `actionlint` are clean. Step 6
+(GitHub Actions) waits for this branch to be pushed, after 1.9.
+- **Positive runs:** the six assertions pass in B, in C (where assertion 6
+  proves the rewrites) and in B with `NEUTRALIZE_NODE_INGRESSES=true`. Every
+  network: the Job has 16 recaps with `failed=0`, the destroy Job leaves
+  nothing, no ephemeral pod is left.
+- **Negative runs, as in the check:** wrong target port, assertion 3 fails with
+  `default-org1peer-operations: 443 -> 7051, expected 9443`; console back on
+  nginx, assertion 1 fails with `console Ingress class 'nginx', expected
+  'none'`. Each time, the six assertions pass again once the change is undone.
+- **Negative runs, added:** on a test Ingress, assertion 1 fails on class
+  `nginx` with `NEUTRALIZE_NODE_INGRESSES=true`, and on a host outside
+  `DOMAIN`. A wrong `API_SECRET` fails assertion 2, which proves that the
+  credentials do reach curl through stdin.
+- **Not proven:** the failure paths of assertions 4, 5 and 6 were not
+  triggered: no run broke a rewrite or a node.
 
 ### ✋  check 1.10
 
